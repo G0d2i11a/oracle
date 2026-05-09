@@ -13,6 +13,7 @@ describe("browser thinking-time selection expression", () => {
     expect(expression).toContain("normalize");
     expect(expression).toContain("extended");
     expect(expression).toContain("standard");
+    expect(expression).toContain("标准");
   });
 
   it("targets the requested thinking time level", () => {

@@ -13,7 +13,6 @@ import {
 import * as attachments from "../../src/browser/actions/attachments.js";
 import * as attachmentDataTransfer from "../../src/browser/actions/attachmentDataTransfer.js";
 import type { ChromeClient } from "../../src/browser/types.js";
-import { BrowserAutomationError } from "../../src/oracle/errors.js";
 
 const logger = vi.fn();
 
@@ -168,20 +167,20 @@ describe("ensureNotBlocked", () => {
     await expect(ensureNotBlocked(runtime, false, logger)).resolves.toBeUndefined();
   });
 
-  test("throws structured browser error when headful cloudflare is detected", async () => {
+  test("waits for manual clearance when headful cloudflare is detected", async () => {
     const runtime = {
-      evaluate: vi.fn().mockResolvedValue({ result: { value: "Just a moment..." } }),
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: "Just a moment..." } })
+        .mockResolvedValueOnce({ result: { value: "ChatGPT" } })
+        .mockResolvedValueOnce({ result: { value: false } }),
     } as unknown as ChromeClient["Runtime"];
-    try {
-      await ensureNotBlocked(runtime, false, logger);
-      throw new Error("expected ensureNotBlocked to throw");
-    } catch (error) {
-      expect(error).toBeInstanceOf(BrowserAutomationError);
-      expect((error as BrowserAutomationError).details).toMatchObject({
-        stage: "cloudflare-challenge",
-        headless: false,
-      });
-    }
+    await expect(ensureNotBlocked(runtime, false, logger)).resolves.toBeUndefined();
+    expect(logger).toHaveBeenCalledWith("Cloudflare anti-bot page detected");
+    expect(logger).toHaveBeenCalledWith(
+      "Cloudflare challenge detected; waiting for manual clearance in the open browser...",
+    );
+    expect(logger).toHaveBeenCalledWith("Cloudflare challenge cleared; continuing browser run.");
   });
 
   test("throws structured browser error when ChatGPT account security block appears", async () => {
@@ -382,6 +381,40 @@ describe("waitForAssistantResponse", () => {
     const result = await waitForAssistantResponse(runtime, 200, logger);
     expect(result.text).toBe("Recovered");
     expect(evaluate).toHaveBeenCalled();
+  });
+
+  test("ignores Retry-only captures and waits for a real assistant answer", async () => {
+    const evaluate = vi
+      .fn()
+      .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+        if (params?.awaitPromise) {
+          return {
+            result: {
+              type: "object",
+              value: { text: "Retry", html: "<button>Retry</button>" },
+            },
+          };
+        }
+        if (
+          typeof params?.expression === "string" &&
+          params.expression.includes("extractAssistantTurn")
+        ) {
+          return {
+            result: {
+              value: {
+                text: "Recovered real answer",
+                html: "<p>Recovered real answer</p>",
+                messageId: "mid",
+                turnId: "tid",
+              },
+            },
+          };
+        }
+        return { result: { value: null } };
+      });
+    const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+    const result = await waitForAssistantResponse(runtime, 200, logger);
+    expect(result.text).toBe("Recovered real answer");
   });
 });
 

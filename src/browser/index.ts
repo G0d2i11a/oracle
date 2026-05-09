@@ -144,8 +144,17 @@ function shouldPreserveBrowserOnError(error: unknown, headless: boolean): boolea
   return classifyPreservedBrowserError(error, headless) !== null;
 }
 
+function isAttachmentUploadTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Attachments did not finish uploading before timeout/i.test(message);
+}
+
 export function shouldPreserveBrowserOnErrorForTest(error: unknown, headless: boolean): boolean {
   return shouldPreserveBrowserOnError(error, headless);
+}
+
+export function isAttachmentUploadTimeoutErrorForTest(error: unknown): boolean {
+  return isAttachmentUploadTimeoutError(error);
 }
 
 export function classifyPreservedBrowserErrorForTest(
@@ -167,7 +176,9 @@ function shouldSkipThinkingTimeSelection(
     normalized === "gpt-5.5-pro" ||
     normalized.includes("gpt-5.5 pro") ||
     normalized.includes("gpt 5.5 pro") ||
-    normalized.includes("gpt 5 5 pro")
+    normalized.includes("gpt 5 5 pro") ||
+    (normalized.includes("5.5") && normalized.includes("pro") && normalized.includes("extended")) ||
+    normalized.includes("进阶")
   );
 }
 
@@ -2402,6 +2413,7 @@ async function runRemoteBrowserMode(
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
         typeof baselineSnapshot?.text === "string" ? baselineSnapshot.text.trim() : "";
+      let attachmentWaitTimedOut = false;
       const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
       await clearPromptComposer(Runtime, logger);
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
@@ -2421,10 +2433,22 @@ async function runRemoteBrowserMode(
         const perFileTimeout = 15_000;
         const waitBudget =
           Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
-        await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
-        logger("All attachments uploaded");
+        try {
+          await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
+          logger("All attachments uploaded");
+        } catch (error) {
+          if (isAttachmentUploadTimeoutError(error)) {
+            attachmentWaitTimedOut = true;
+            logger(
+              `[browser] Attachment upload timed out after ${Math.round(waitBudget / 1000)}s; continuing without confirmation.`,
+            );
+          } else {
+            throw error;
+          }
+        }
       }
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
+      const sendAttachmentNames = attachmentWaitTimedOut ? [] : attachmentNames;
       const providerState: Record<string, unknown> = {
         runtime: Runtime,
         input: Input,
@@ -2432,7 +2456,7 @@ async function runRemoteBrowserMode(
         timeoutMs: config.timeoutMs,
         inputTimeoutMs: config.inputTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
-        attachmentNames,
+        attachmentNames: sendAttachmentNames,
       };
       await runProviderSubmissionFlow(chatgptDomProvider, {
         prompt,

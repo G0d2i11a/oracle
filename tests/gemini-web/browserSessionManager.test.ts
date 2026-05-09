@@ -8,6 +8,7 @@ const {
   connectWithNewTab,
   closeTab,
   readDevToolsPort,
+  findRunningChromeDebugTargetForProfile,
   writeDevToolsActivePort,
   writeChromePid,
   cleanupStaleProfileState,
@@ -17,6 +18,7 @@ const {
   connectWithNewTab: vi.fn(),
   closeTab: vi.fn(async () => undefined),
   readDevToolsPort: vi.fn(async () => null),
+  findRunningChromeDebugTargetForProfile: vi.fn(async () => null),
   writeDevToolsActivePort: vi.fn(async () => undefined),
   writeChromePid: vi.fn(async () => undefined),
   cleanupStaleProfileState: vi.fn(async () => undefined),
@@ -31,6 +33,7 @@ vi.mock("../../src/browser/chromeLifecycle.js", () => ({
 
 vi.mock("../../src/browser/profileState.js", () => ({
   readDevToolsPort,
+  findRunningChromeDebugTargetForProfile,
   writeDevToolsActivePort,
   writeChromePid,
   cleanupStaleProfileState,
@@ -49,6 +52,7 @@ describe("openGeminiBrowserSession", () => {
     connectWithNewTab.mockReset();
     closeTab.mockClear();
     readDevToolsPort.mockReset();
+    findRunningChromeDebugTargetForProfile.mockReset();
     writeDevToolsActivePort.mockClear();
     writeChromePid.mockClear();
     cleanupStaleProfileState.mockClear();
@@ -66,6 +70,7 @@ describe("openGeminiBrowserSession", () => {
       },
     });
     readDevToolsPort.mockResolvedValue(null);
+    findRunningChromeDebugTargetForProfile.mockResolvedValue(null);
     verifyDevToolsReachable.mockResolvedValue({ ok: false, error: "unreachable" });
   });
 

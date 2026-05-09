@@ -77,10 +77,15 @@ function assertResolvedModelSelection(desiredModel: string, resolvedLabel: strin
     resolved.includes(" pro") ||
     resolved.endsWith("pro") ||
     resolved.includes("pro ") ||
+    resolved.includes("专业") ||
     resolved.includes("extended") ||
+    resolved.includes("进阶") ||
     resolved.includes("gpt-5.5-pro") ||
     resolved.includes("gpt 5 5 pro");
-  if (!hasProSignal || (resolved.includes("thinking") && !resolved.includes("pro"))) {
+  const hasThinkingSignal = resolved.includes("thinking") || resolved.includes("思考");
+  const resolvedHasProSignal =
+    resolved.includes("pro") || resolved.includes("专业") || resolved.includes("进阶");
+  if (!hasProSignal || (hasThinkingSignal && !resolvedHasProSignal)) {
     throw new Error(
       `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires GPT-5.5 Pro Extended. Use model "gpt-5.5" with browser thinking time "heavy" for Thinking Heavy.`,
     );
@@ -136,7 +141,7 @@ function buildModelSelectionExpression(
       }
       return value
         .toLowerCase()
-        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/[^a-z0-9\\u4e00-\\u9fff]+/g, ' ')
         .replace(/\\s+/g, ' ')
         .trim();
     };
@@ -146,34 +151,57 @@ function buildModelSelectionExpression(
       .map((token) => normalizeText(token))
       .filter(Boolean);
     const targetWords = normalizedTarget.split(' ').filter(Boolean);
-    const desiredVersion = normalizedTarget.includes('5 4')
-      ? '5-4'
-      : normalizedTarget.includes('5 5')
-        ? '5-5'
-        : normalizedTarget.includes('5 2')
-        ? '5-2'
-        : normalizedTarget.includes('5 1')
-          ? '5-1'
-          : normalizedTarget.includes('5 0')
-            ? '5-0'
-          : null;
-    const wantsPro = normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro') || normalizedTokens.includes('pro');
+    const desiredVersionMatch = normalizedTarget.match(/\\b([0-9]+)\\s+([0-9]+)\\b/);
+    const desiredVersion = desiredVersionMatch
+      ? desiredVersionMatch[1] + '-' + desiredVersionMatch[2]
+      : null;
+    const hasProText = (value) =>
+      value.includes(' pro') ||
+      value.startsWith('pro ') ||
+      value.endsWith(' pro') ||
+      value === 'pro' ||
+      value.includes('proresearch') ||
+      value.includes('专业');
+    const hasExtendedText = (value) =>
+      value.includes('extended') ||
+      value.includes('进阶') ||
+      value.includes('advanced');
+    const hasThinkingText = (value) => value.includes('thinking') || value.includes('思考');
+    const wantsPro = hasProText(normalizedTarget) || normalizedTokens.some((token) => hasProText(token));
     const wantsInstant = normalizedTarget.includes('instant');
-    const wantsThinking = normalizedTarget.includes('thinking');
+    const wantsThinking = hasThinkingText(normalizedTarget);
+    const wantsExtended = hasExtendedText(normalizedTarget);
     const isTargetGpt55VisibleAlias = (value) => {
-      if (desiredVersion !== '5-5') return false;
+      if (!(wantsPro && wantsExtended)) return false;
       const label = normalizeText(value);
-      if (wantsPro) {
-        return label.includes('pro') && label.includes('extended') && !label.includes('thinking');
+      const labelVersion = label.match(/\\b([0-9]+)\\s+([0-9]+)\\b/);
+      const candidateVersion = labelVersion ? labelVersion[1] + '-' + labelVersion[2] : null;
+      if (desiredVersion && candidateVersion && candidateVersion !== desiredVersion) {
+        return false;
       }
-      if (wantsThinking) {
-        return label.includes('thinking') && label.includes('heavy') && !label.includes('pro');
+      if (hasProText(label) && hasExtendedText(label) && !hasThinkingText(label)) {
+        return true;
       }
       return false;
     };
     const hasProComposerPill = () => Boolean(
       document.querySelector('button.__composer-pill, button[aria-label="Pro, click to remove"]')
     );
+    const compactVersion = (version) => version.replace(/-/g, '');
+    const spacedVersion = (version) => version.replace(/-/g, ' ');
+    const dottedVersion = (version) => version.replace(/-/g, '.');
+    const versionFromTestId = (testid) => {
+      const value = (testid ?? '').toLowerCase();
+      const dottedOrDashed = value.match(/(?:^|[^0-9])([0-9]+)[-.]([0-9]+)(?:[^0-9]|$)/);
+      if (dottedOrDashed) {
+        return dottedOrDashed[1] + '-' + dottedOrDashed[2];
+      }
+      const compact = value.match(/gpt[-_]?([0-9])([0-9])(?:[^0-9]|$)/);
+      if (compact) {
+        return compact[1] + '-' + compact[2];
+      }
+      return null;
+    };
 
     const button = document.querySelector(BUTTON_SELECTOR);
     if (!button) {
@@ -228,11 +256,7 @@ function buildModelSelectionExpression(
         return true;
       }
       if (desiredVersion) {
-        if (desiredVersion === '5-5' && !normalizedLabel.includes('5 5')) return false;
-        if (desiredVersion === '5-4' && !normalizedLabel.includes('5 4')) return false;
-        if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2')) return false;
-        if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1')) return false;
-        if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0')) return false;
+        if (!normalizedLabel.includes(spacedVersion(desiredVersion))) return false;
       }
       if (wantsPro && !normalizedLabel.includes(' pro')) return false;
       if (wantsInstant && !normalizedLabel.includes('instant')) return false;
@@ -329,38 +353,8 @@ function buildModelSelectionExpression(
       const normalizedTestId = (testid ?? '').toLowerCase();
       if (normalizedTestId) {
         if (desiredVersion) {
-          // data-testid strings have been observed with both dotted and dashed versions (e.g. gpt-5.2-pro vs gpt-5-2-pro).
-          const has52 =
-            normalizedTestId.includes('5-2') ||
-            normalizedTestId.includes('5.2') ||
-            normalizedTestId.includes('gpt-5-2') ||
-            normalizedTestId.includes('gpt-5.2') ||
-            normalizedTestId.includes('gpt52');
-          const has55 =
-            normalizedTestId.includes('5-5') ||
-            normalizedTestId.includes('5.5') ||
-            normalizedTestId.includes('gpt-5-5') ||
-            normalizedTestId.includes('gpt-5.5') ||
-            normalizedTestId.includes('gpt55');
-          const has54 =
-            normalizedTestId.includes('5-4') ||
-            normalizedTestId.includes('5.4') ||
-            normalizedTestId.includes('gpt-5-4') ||
-            normalizedTestId.includes('gpt-5.4') ||
-            normalizedTestId.includes('gpt54');
-          const has51 =
-            normalizedTestId.includes('5-1') ||
-            normalizedTestId.includes('5.1') ||
-            normalizedTestId.includes('gpt-5-1') ||
-            normalizedTestId.includes('gpt-5.1') ||
-            normalizedTestId.includes('gpt51');
-          const has50 =
-            normalizedTestId.includes('5-0') ||
-            normalizedTestId.includes('5.0') ||
-            normalizedTestId.includes('gpt-5-0') ||
-            normalizedTestId.includes('gpt-5.0') ||
-            normalizedTestId.includes('gpt50');
-          const candidateVersion = has55 ? '5-5' : has54 ? '5-4' : has52 ? '5-2' : has51 ? '5-1' : has50 ? '5-0' : null;
+          // data-testid strings have been observed with dotted, dashed, and compact versions.
+          const candidateVersion = versionFromTestId(normalizedTestId);
           // If a candidate advertises a different version, ignore it entirely.
           if (candidateVersion && candidateVersion !== desiredVersion) {
             return 0;
@@ -389,14 +383,10 @@ function buildModelSelectionExpression(
       }
       const candidateGpt55VisibleAlias = isTargetGpt55VisibleAlias(normalizedText);
       const candidateHasThinking =
-        normalizedText.includes('thinking') || normalizedTestId.includes('thinking');
+        hasThinkingText(normalizedText) || normalizedTestId.includes('thinking');
       const candidateHasPro =
         candidateGpt55VisibleAlias ||
-        normalizedText === 'pro' ||
-        normalizedText.startsWith('pro ') ||
-        normalizedText.includes(' pro ') ||
-        normalizedText.endsWith(' pro') ||
-        normalizedText.includes('proresearch') ||
+        hasProText(normalizedText) ||
         normalizedTestId.includes('pro');
       if (wantsPro && candidateHasThinking) return 0;
       if (wantsPro && !candidateHasPro) return 0;
@@ -441,10 +431,10 @@ function buildModelSelectionExpression(
       }
       // If the caller didn't explicitly ask for Pro, prefer non-Pro options when both exist.
       if (wantsPro) {
-        if (!normalizedText.includes(' pro')) {
+        if (!hasProText(normalizedText)) {
           score -= 80;
         }
-      } else if (normalizedText.includes(' pro')) {
+      } else if (hasProText(normalizedText)) {
         score -= 40;
       }
       // Similarly for Thinking variant
@@ -452,7 +442,7 @@ function buildModelSelectionExpression(
         if (!normalizedText.includes('thinking') && !normalizedTestId.includes('thinking')) {
           score -= 80;
         }
-      } else if (normalizedText.includes('thinking') || normalizedTestId.includes('thinking')) {
+      } else if (hasThinkingText(normalizedText) || normalizedTestId.includes('thinking')) {
         score -= 40;
       }
       // Similarly for Instant variant
@@ -613,15 +603,19 @@ function buildComposerSignalMatchers(targetModel: string): ComposerSignalMatcher
     .trim();
 
   if (normalized.includes("pro")) {
-    return { includesAny: ["pro"], excludesAny: ["thinking"], allowBlank: false };
+    return {
+      includesAny: ["pro", "专业", "进阶"],
+      excludesAny: ["thinking", "思考"],
+      allowBlank: false,
+    };
   }
   if (normalized.includes("thinking")) {
-    return { includesAny: ["thinking"], excludesAny: ["pro"], allowBlank: false };
+    return { includesAny: ["thinking", "思考"], excludesAny: ["pro", "专业"], allowBlank: false };
   }
   if (normalized.includes("instant")) {
-    return { includesAny: [], excludesAny: ["thinking", "pro"], allowBlank: true };
+    return { includesAny: [], excludesAny: ["thinking", "思考", "pro", "专业"], allowBlank: true };
   }
-  return { includesAny: [], excludesAny: ["thinking", "pro"], allowBlank: true };
+  return { includesAny: [], excludesAny: ["thinking", "思考", "pro", "专业"], allowBlank: true };
 }
 
 export function buildComposerSignalMatchersForTest(targetModel: string): ComposerSignalMatchers {
@@ -653,6 +647,43 @@ function buildModelMatchersLiteral(targetModel: string): {
   push(`chatgpt ${dotless}`, labelTokens);
   push(`gpt ${base}`, labelTokens);
   push(`gpt ${dotless}`, labelTokens);
+  const genericVersion =
+    base.match(/(?:^|[^0-9])([0-9]+)[._-]([0-9]+)(?:[^0-9]|$)/) ??
+    base.match(/gpt[-_]?([0-9])([0-9])(?:[^0-9]|$)/);
+  const genericVersionParts = genericVersion
+    ? { major: genericVersion[1], minor: genericVersion[2] }
+    : null;
+  if (genericVersionParts) {
+    const { major, minor } = genericVersionParts;
+    const dotted = `${major}.${minor}`;
+    const dashed = `${major}-${minor}`;
+    const compactVersion = `${major}${minor}`;
+    push(dotted, labelTokens);
+    push(`gpt-${dotted}`, labelTokens);
+    push(`gpt${dotted}`, labelTokens);
+    push(`gpt-${dashed}`, labelTokens);
+    push(`gpt${dashed}`, labelTokens);
+    push(`gpt${compactVersion}`, labelTokens);
+    push(`chatgpt ${dotted}`, labelTokens);
+    if (base.includes("thinking")) {
+      push("thinking", labelTokens);
+      testIdTokens.add(`model-switcher-gpt-${dashed}-thinking`);
+      testIdTokens.add(`gpt-${dashed}-thinking`);
+      testIdTokens.add(`gpt-${dotted}-thinking`);
+    }
+    if (base.includes("instant")) {
+      push("instant", labelTokens);
+      testIdTokens.add(`model-switcher-gpt-${dashed}`);
+      testIdTokens.add(`gpt-${dashed}`);
+      testIdTokens.add(`gpt-${dotted}`);
+    }
+    if (!base.includes("pro") && !base.includes("thinking") && !base.includes("instant")) {
+      testIdTokens.add(`model-switcher-gpt-${dashed}`);
+    }
+    testIdTokens.add(`gpt-${dashed}`);
+    testIdTokens.add(`gpt${dashed}`);
+    testIdTokens.add(`gpt${compactVersion}`);
+  }
   // Numeric variations (5.5 <-> 55 <-> gpt-5-5)
   if (base.includes("5.5") || base.includes("5-5") || base.includes("55")) {
     push("5.5", labelTokens);
@@ -754,6 +785,25 @@ function buildModelMatchersLiteral(targetModel: string): {
     push("proresearch", labelTokens);
     push("research grade", labelTokens);
     push("advanced reasoning", labelTokens);
+    push("进阶", labelTokens);
+    push("专业", labelTokens);
+    push("进阶专业", labelTokens);
+    push("专业进阶", labelTokens);
+    if (base.includes("extended")) {
+      push("extended", labelTokens);
+      push("extended pro", labelTokens);
+      push("pro extended", labelTokens);
+    }
+    if (genericVersionParts) {
+      const { major, minor } = genericVersionParts;
+      const dotted = `${major}.${minor}`;
+      const dashed = `${major}-${minor}`;
+      const compactVersion = `${major}${minor}`;
+      testIdTokens.add(`model-switcher-gpt-${dashed}-pro`);
+      testIdTokens.add(`gpt-${dotted}-pro`);
+      testIdTokens.add(`gpt-${dashed}-pro`);
+      testIdTokens.add(`gpt${compactVersion}pro`);
+    }
     if (base.includes("5.5") || base.includes("5-5") || base.includes("55")) {
       push("pro extended", labelTokens);
       push("extended pro", labelTokens);

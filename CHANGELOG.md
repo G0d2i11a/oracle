@@ -64,6 +64,10 @@
 - Browser: guard assistant response capture against stale turns from a different ChatGPT conversation. (#117) — thanks @frankekn.
 - Browser: verify sent attachments against the expected user turn instead of stale earlier turns. (#117) — thanks @frankekn.
 
+### Fixed
+
+- Browser: adapt ChatGPT browser mode to the newer model-selector UI by verifying selected `menuitemradio`/`radio` items instead of the static top-bar label, preferring `Configure...` when needed, treating missing standalone thinking-time controls as best-effort only for project/current-model reuse, and requiring `--browser-model-strategy select` for guaranteed `GPT-5.4 Pro` + thinking-time runs so Oracle fails fast instead of silently downgrading.
+
 ## 0.9.0 — 2026-03-08
 
 ### Changed

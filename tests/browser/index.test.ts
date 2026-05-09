@@ -114,6 +114,7 @@ describe("shouldSkipThinkingTimeSelectionForTest", () => {
   test("treats GPT-5.5 Pro Extended as resolved by model selection", () => {
     expect(shouldSkipThinkingTimeSelectionForTest("GPT-5.5 Pro", "extended")).toBe(true);
     expect(shouldSkipThinkingTimeSelectionForTest("gpt-5.5-pro", "extended")).toBe(true);
+    expect(shouldSkipThinkingTimeSelectionForTest("5.5 Extended Pro", "extended")).toBe(true);
   });
 
   test("keeps explicit effort selection for non-Pro or non-extended requests", () => {

@@ -5,6 +5,7 @@ import type { BrowserRunOptions, BrowserLogger, ChromeClient } from "../browser/
 import { launchChrome, connectWithNewTab, closeTab } from "../browser/chromeLifecycle.js";
 import { resolveBrowserConfig } from "../browser/config.js";
 import {
+  findRunningChromeDebugTargetForProfile,
   readDevToolsPort,
   writeDevToolsActivePort,
   writeChromePid,
@@ -42,6 +43,19 @@ export async function openGeminiBrowserSession(
   const keepBrowser = Boolean(resolvedConfig.keepBrowser);
 
   let port = await readDevToolsPort(profileDir);
+  if (!port) {
+    const discovered = await findRunningChromeDebugTargetForProfile(profileDir);
+    if (discovered) {
+      port = discovered.port;
+      await writeDevToolsActivePort(profileDir, port);
+      if (discovered.pid) {
+        await writeChromePid(profileDir, discovered.pid);
+      }
+      log?.(
+        `[gemini-web] Recovered Chrome via process scan on port ${port}${discovered.pid ? ` (pid ${discovered.pid})` : ""} for ${purpose}.`,
+      );
+    }
+  }
   let launchedChrome: Awaited<ReturnType<typeof launchChrome>> | null = null;
   let chromeWasLaunched = false;
 

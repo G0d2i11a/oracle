@@ -10,6 +10,7 @@ const {
   killChrome,
   resolveBrowserConfig,
   readDevToolsPort,
+  findRunningChromeDebugTargetForProfile,
   writeDevToolsActivePort,
   writeChromePid,
   cleanupStaleProfileState,
@@ -22,6 +23,7 @@ const {
   killChrome: vi.fn(async () => undefined),
   resolveBrowserConfig: vi.fn((input: unknown) => input),
   readDevToolsPort: vi.fn(async () => null),
+  findRunningChromeDebugTargetForProfile: vi.fn(async () => null),
   writeDevToolsActivePort: vi.fn(async () => undefined),
   writeChromePid: vi.fn(async () => undefined),
   cleanupStaleProfileState: vi.fn(async () => undefined),
@@ -82,6 +84,7 @@ vi.mock("../../src/browser/config.js", () => ({
 }));
 vi.mock("../../src/browser/profileState.js", () => ({
   readDevToolsPort,
+  findRunningChromeDebugTargetForProfile,
   writeDevToolsActivePort,
   writeChromePid,
   cleanupStaleProfileState,
@@ -122,6 +125,7 @@ describe("gemini-web executor", () => {
     closeTab.mockClear();
     resolveBrowserConfig.mockClear();
     readDevToolsPort.mockReset();
+    findRunningChromeDebugTargetForProfile.mockReset();
     writeDevToolsActivePort.mockClear();
     writeChromePid.mockClear();
     cleanupStaleProfileState.mockClear();
@@ -134,6 +138,7 @@ describe("gemini-web executor", () => {
       pid: 12345,
       kill: killChrome,
     });
+    findRunningChromeDebugTargetForProfile.mockResolvedValue(null);
     const runtimeEvaluate = vi.fn(async ({ expression }: { expression?: string }) => {
       const source = String(expression ?? "");
       if (source.includes("requiresLogin")) {

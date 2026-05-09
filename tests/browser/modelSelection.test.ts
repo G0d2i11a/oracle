@@ -30,6 +30,22 @@ describe("browser model selection matchers", () => {
     );
   });
 
+  it("includes extended pro + 5.5 tokens for ChatGPT 5.5 Extended Pro", () => {
+    const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("5.5 Extended Pro");
+    expect(labelTokens).toContain("extended pro");
+    expect(labelTokens).toContain("进阶");
+    expect(labelTokens).toContain("进阶专业");
+    expect(testIdTokens).toContain("model-switcher-gpt-5-5-pro");
+  });
+
+  it("builds future GPT version tokens without version-specific hardcoding", () => {
+    const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("5.7 Extended Pro");
+    expect(labelTokens).toContain("gpt-5.7");
+    expect(labelTokens).toContain("extended pro");
+    expect(testIdTokens).toContain("model-switcher-gpt-5-7-pro");
+    expect(testIdTokens).toContain("gpt-5.7-pro");
+  });
+
   it("includes rich tokens for gpt-5.1", () => {
     const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("gpt-5.1");
     expectContains(labelTokens, "gpt-5.1");
@@ -81,12 +97,28 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("const closeMenu = () =>");
     expect(expression).toContain("key: 'Escape'");
     expect(expression).toContain("closeMenu();");
+    expect(expression).toContain("COMPOSER_MODEL_SIGNAL_SELECTOR");
+    expect(expression).toContain("activeSelectionMatchesTarget");
+    expect(expression).toContain("isThinkingEffortControl");
+    expect(expression).toContain("wantsExtended");
+    expect(expression).toContain("desiredVersionMatch");
+    expect(expression).toContain("versionFromTestId");
+  });
+
+  it("treats Pro/Thinking/Instant as hard variant requirements", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.4-pro");
+    expect(expression).toContain("const candidateHasPro =");
+    expect(expression).toContain("const candidateHasThinking =");
+    expect(expression).toContain("if (wantsPro && candidateHasThinking) return 0;");
+    expect(expression).toContain("if (wantsPro && !candidateHasPro) return 0;");
   });
 
   it("recognizes current GPT-5.5 visible aliases in the picker expression", () => {
     const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
     expect(expression).toContain("isTargetGpt55VisibleAlias");
-    expect(expression).toContain("label.includes('pro') && label.includes('extended')");
+    expect(expression).toContain("const hasProText =");
+    expect(expression).toContain("value.includes('专业')");
+    expect(expression).toContain("const hasExtendedText =");
     expect(expression).toContain("desiredVersion === '5-5'");
   });
 
@@ -133,6 +165,7 @@ describe("browser model selection matchers", () => {
       /requires GPT-5.5 Pro Extended/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "GPT-5.5 Pro")).not.toThrow();
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "进阶专业")).not.toThrow();
   });
 
   it("does not validate the active picker label when strategy keeps current selection", async () => {
@@ -151,18 +184,18 @@ describe("browser model selection matchers", () => {
 
   it("builds composer footer matchers for generic ChatGPT header states", () => {
     expect(buildComposerSignalMatchersForTest("GPT-5.5 Pro")).toEqual({
-      includesAny: ["pro"],
-      excludesAny: ["thinking"],
+      includesAny: ["pro", "专业", "进阶"],
+      excludesAny: ["thinking", "思考"],
       allowBlank: false,
     });
     expect(buildComposerSignalMatchersForTest("Thinking 5.5")).toEqual({
-      includesAny: ["thinking"],
-      excludesAny: ["pro"],
+      includesAny: ["thinking", "思考"],
+      excludesAny: ["pro", "专业"],
       allowBlank: false,
     });
     expect(buildComposerSignalMatchersForTest("GPT-5.2 Instant")).toEqual({
       includesAny: [],
-      excludesAny: ["thinking", "pro"],
+      excludesAny: ["thinking", "思考", "pro", "专业"],
       allowBlank: true,
     });
   });

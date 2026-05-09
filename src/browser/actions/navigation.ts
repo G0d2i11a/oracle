@@ -175,10 +175,19 @@ export async function ensureNotBlocked(
   logger: BrowserLogger,
 ) {
   if (await isCloudflareInterstitial(Runtime)) {
+    logger("Cloudflare anti-bot page detected");
+    if (!headless) {
+      logger("Cloudflare challenge detected; waiting for manual clearance in the open browser...");
+      const cleared = await waitForCloudflareClearance(Runtime, logger);
+      if (cleared) {
+        logger("Cloudflare challenge cleared; continuing browser run.");
+        return;
+      }
+    }
+
     const message = headless
       ? "Cloudflare challenge detected in headless mode. Re-run with --headful so you can solve the challenge."
-      : "Cloudflare challenge detected. Complete the “Just a moment…” check in the open browser, then rerun.";
-    logger("Cloudflare anti-bot page detected");
+      : "Cloudflare challenge still present after waiting. Complete the “Just a moment…” check in the open browser, then rerun.";
     throw new BrowserAutomationError(message, { stage: "cloudflare-challenge", headless });
   }
   if (await isChatGptAccountSecurityBlock(Runtime)) {
@@ -187,6 +196,36 @@ export async function ensureNotBlocked(
     logger("ChatGPT account security block detected");
     throw new BrowserAutomationError(message, { stage: "chatgpt-account-blocked" });
   }
+}
+
+const CLOUDFLARE_MANUAL_CLEARANCE_TIMEOUT_MS = 10 * 60_000;
+const CLOUDFLARE_MANUAL_CLEARANCE_POLL_MS = 1_000;
+const CLOUDFLARE_MANUAL_CLEARANCE_LOG_EVERY_MS = 30_000;
+
+async function waitForCloudflareClearance(
+  Runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+  timeoutMs = CLOUDFLARE_MANUAL_CLEARANCE_TIMEOUT_MS,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let nextLogAt = Date.now() + CLOUDFLARE_MANUAL_CLEARANCE_LOG_EVERY_MS;
+
+  while (Date.now() < deadline) {
+    if (!(await isCloudflareInterstitial(Runtime))) {
+      return true;
+    }
+
+    const now = Date.now();
+    if (now >= nextLogAt) {
+      const remainingSeconds = Math.max(0, Math.ceil((deadline - now) / 1000));
+      logger(`Still waiting for manual Cloudflare clearance (${remainingSeconds}s remaining)...`);
+      nextLogAt = now + CLOUDFLARE_MANUAL_CLEARANCE_LOG_EVERY_MS;
+    }
+
+    await delay(CLOUDFLARE_MANUAL_CLEARANCE_POLL_MS);
+  }
+
+  return !(await isCloudflareInterstitial(Runtime));
 }
 
 const LOGIN_CHECK_TIMEOUT_MS = 5_000;

@@ -34,6 +34,17 @@ function isAnswerNowPlaceholderText(normalized: string): boolean {
   );
 }
 
+function isAssistantUiActionText(normalized: string): boolean {
+  const text = normalized.trim();
+  if (!text) return false;
+  return (
+    text === "retry" ||
+    text === "try again" ||
+    text === "regenerate" ||
+    text === "regenerate response"
+  );
+}
+
 export async function waitForAssistantResponse(
   Runtime: ChromeClient["Runtime"],
   timeoutMs: number,
@@ -341,7 +352,7 @@ async function parseAssistantEvaluationResult(
         : undefined;
     const text = cleanAssistantText(String((result.value as { text: unknown }).text ?? ""));
     const normalized = text.toLowerCase();
-    if (isAnswerNowPlaceholderText(normalized)) {
+    if (isAnswerNowPlaceholderText(normalized) || isAssistantUiActionText(normalized)) {
       return null;
     }
     return { text, html, meta: { turnId, messageId } };
@@ -351,7 +362,10 @@ async function parseAssistantEvaluationResult(
   if (!fallbackText) {
     return null;
   }
-  if (isAnswerNowPlaceholderText(fallbackText.toLowerCase())) {
+  if (
+    isAnswerNowPlaceholderText(fallbackText.toLowerCase()) ||
+    isAssistantUiActionText(fallbackText.toLowerCase())
+  ) {
     return null;
   }
   return { text: fallbackText, html: undefined, meta: {} };
@@ -567,6 +581,9 @@ function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
   // "Pro thinking" often renders a placeholder turn containing an "Answer now" gate.
   // Treat it as incomplete so browser mode keeps waiting for the real assistant text.
   if (isAnswerNowPlaceholderText(normalized)) {
+    return null;
+  }
+  if (isAssistantUiActionText(normalized)) {
     return null;
   }
   // Ignore user echo turns that can show up in project view fallbacks.

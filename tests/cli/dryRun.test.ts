@@ -146,6 +146,38 @@ describe("runDryRunSummary", () => {
     ).rejects.toThrow(/follow-ups are not supported with Deep Research/i);
   });
 
+  test("prints browser target label instead of internal model alias", async () => {
+    const log = vi.fn();
+    await runDryRunSummary(
+      {
+        engine: "browser",
+        runOptions: baseRunOptions,
+        cwd: "/repo",
+        version: "2.0.0",
+        log,
+        browserConfig: {
+          desiredModel: "5.7 Extended Pro",
+        },
+      },
+      {
+        assembleBrowserPromptImpl: async () => ({
+          markdown: "bundle",
+          composerText: "prompt",
+          estimatedInputTokens: 9,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+      },
+    );
+
+    const joined = log.mock.calls.flat().join("\n");
+    expect(joined).toContain("browser mode (5.7 Extended Pro)");
+  });
+
   test("logs inline cookie strategy", async () => {
     const log = vi.fn();
     await runDryRunSummary(

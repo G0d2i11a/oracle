@@ -15,6 +15,7 @@ import { CHATGPT_URL } from "../browser/constants.js";
 import { getCliVersion } from "../version.js";
 import {
   cleanupStaleProfileState,
+  findRunningChromeDebugTargetForProfile,
   readDevToolsPort,
   verifyDevToolsReachable,
   writeChromePid,
@@ -299,7 +300,20 @@ export async function serveRemote(options: RemoteServerOptions = {}): Promise<vo
       console.log(
         `Cookie extraction is unavailable on this platform. Using manual-login Chrome profile at ${manualProfileDir}. Remote runs will reuse this profile; sign in once when the browser opens.`,
       );
-      const existingPort = await readDevToolsPort(manualProfileDir);
+      let existingPort = await readDevToolsPort(manualProfileDir);
+      if (!existingPort) {
+        const discovered = await findRunningChromeDebugTargetForProfile(manualProfileDir);
+        if (discovered) {
+          existingPort = discovered.port;
+          await writeDevToolsActivePort(manualProfileDir, existingPort);
+          if (discovered.pid) {
+            await writeChromePid(manualProfileDir, discovered.pid);
+          }
+          console.log(
+            `Recovered existing automation Chrome via process scan (port ${existingPort}${discovered.pid ? `, pid ${discovered.pid}` : ""}).`,
+          );
+        }
+      }
       if (existingPort) {
         const reachable = await verifyDevToolsReachable({ port: existingPort });
         if (reachable.ok) {

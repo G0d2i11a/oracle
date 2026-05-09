@@ -88,7 +88,8 @@ export async function runBrowserSessionExecution(
       ),
     );
   }
-  const headerLine = `Launching browser mode (${runOptions.model}) with ~${promptArtifacts.estimatedInputTokens.toLocaleString()} tokens.`;
+  const displayModel = browserConfig.desiredModel?.trim() || runOptions.model;
+  const headerLine = `Launching browser mode (${displayModel}) with ~${promptArtifacts.estimatedInputTokens.toLocaleString()} tokens.`;
   const automationLogger: BrowserLogger = ((message?: string) => {
     if (typeof message !== "string") return;
     const shouldAlwaysPrint =
@@ -177,7 +178,7 @@ export async function runBrowserSessionExecution(
   })();
   const { line1, line2 } = formatFinishLine({
     elapsedMs: browserResult.tookMs,
-    model: `${runOptions.model}[browser]`,
+    model: `${displayModel}[browser]`,
     tokensPart,
     detailParts: [
       runOptions.file && runOptions.file.length > 0 ? `files=${runOptions.file.length}` : null,

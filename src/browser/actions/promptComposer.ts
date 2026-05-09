@@ -21,6 +21,26 @@ const ENTER_KEY_EVENT = {
 } as const;
 const ENTER_KEY_TEXT = "\r";
 
+function normalizePromptForComparison(value: string): string {
+  let text = value?.toLowerCase?.() ?? "";
+  text = text.replace(/\`\`\`[^\n]*\n([\s\S]*?)\`\`\`/g, " $1 ");
+  text = text.replace(/\`\`\`/g, " ");
+  text = text.replace(/\`([^\`]*)\`/g, "$1");
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function composerContainsPrompt(prompt: string, observedValues: string[]): boolean {
+  const normalizedPrompt = normalizePromptForComparison(prompt);
+  if (!normalizedPrompt) {
+    return true;
+  }
+  const requiredProbe =
+    normalizedPrompt.length <= 30 ? normalizedPrompt : normalizedPrompt.slice(0, 120);
+  return observedValues
+    .map((value) => normalizePromptForComparison(value))
+    .some((value) => value.includes(requiredProbe));
+}
+
 export async function submitPrompt(
   deps: {
     runtime: ChromeClient["Runtime"];
@@ -187,6 +207,20 @@ export async function submitPrompt(
     observedFallback.length,
     observedActive.length,
   );
+  const promptVisibleInComposer = composerContainsPrompt(prompt, [
+    observedEditor,
+    observedFallback,
+    observedActive,
+  ]);
+  if (!promptVisibleInComposer) {
+    await logDomFailure(runtime, logger, "prompt-not-in-composer");
+    throw new BrowserAutomationError("Prompt text did not land in the composer before send.", {
+      stage: "submit-prompt",
+      code: "prompt-not-in-composer",
+      promptLength,
+      observedLength,
+    });
+  }
   if (promptLength >= 50_000 && observedLength > 0 && observedLength < promptLength - 2_000) {
     // Learned: very large prompts can truncate silently; fail fast so we can fall back to file uploads.
     await logDomFailure(runtime, logger, "prompt-too-large");
@@ -469,6 +503,7 @@ async function verifyPromptCommitted(
   baselineTurns?: number,
 ): Promise<number | null> {
   const deadline = Date.now() + timeoutMs;
+  const normalizedPrompt = normalizePromptForComparison(prompt.trim());
   const encodedPrompt = JSON.stringify(prompt.trim());
   const primarySelectorLiteral = JSON.stringify(PROMPT_PRIMARY_SELECTOR);
   const fallbackSelectorLiteral = JSON.stringify(PROMPT_FALLBACK_SELECTOR);
@@ -593,6 +628,7 @@ async function verifyPromptCommitted(
       return typeof turnsCount === "number" && Number.isFinite(turnsCount) ? turnsCount : null;
     }
     const fallbackCommit =
+      normalizedPrompt.length === 0 &&
       info?.composerCleared &&
       Boolean(info?.hasNewTurn) &&
       ((info?.stopVisible ?? false) || info?.assistantVisible || info?.inConversation);

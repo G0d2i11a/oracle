@@ -8,6 +8,21 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as profileState from "../../src/browser/profileState.js";
 
 describe("profileState", () => {
+  test("recovers a Chrome DevTools port from process output when DevToolsActivePort is missing", () => {
+    const profileDir = "/Users/shawn/.oracle/browser-profile";
+    const listing = `
+84505 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=54894 --user-data-dir=/Users/shawn/.oracle/browser-profile about:blank
+84511 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/147.0.7727.57/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=renderer --remote-debugging-port=54894 --user-data-dir=/Users/shawn/.oracle/browser-profile
+`.trim();
+
+    expect(
+      profileState.findChromeDebugTargetForProfileFromProcessListForTest(listing, profileDir),
+    ).toEqual({
+      pid: 84505,
+      port: 54894,
+    });
+  });
+
   test("writes DevToolsActivePort to both root and Default", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-profile-"));
     try {
