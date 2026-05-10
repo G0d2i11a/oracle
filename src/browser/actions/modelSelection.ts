@@ -7,6 +7,19 @@ import {
 } from "../constants.js";
 import { logDomFailure } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
+import { BrowserAutomationError } from "../../oracle/errors.js";
+
+type ModelSelectionInterruptionKind =
+  | "cloudflare-challenge"
+  | "manual-verification-required"
+  | "chatgpt-login-required";
+
+interface ModelSelectionInterruption {
+  kind?: ModelSelectionInterruptionKind;
+  title?: string;
+  url?: string;
+  evidence?: string[];
+}
 
 export async function ensureModelSelection(
   Runtime: ChromeClient["Runtime"],
@@ -28,7 +41,12 @@ export async function ensureModelSelection(
         status: "option-not-found";
         hint?: { temporaryChat?: boolean; availableOptions?: string[] };
       }
-    | { status: "button-missing" }
+    | {
+        status: "model-menu-not-opened";
+        hint?: { visibleControls?: string[]; interruption?: ModelSelectionInterruption };
+      }
+    | { status: "button-missing"; hint?: { interruption?: ModelSelectionInterruption } }
+    | { status: "interrupted"; interruption?: ModelSelectionInterruption }
     | undefined;
 
   switch (result?.status) {
@@ -55,11 +73,46 @@ export async function ensureModelSelection(
         `Unable to find model option matching "${desiredModel}" in the model switcher.${availableHint}${tempHint}`,
       );
     }
+    case "model-menu-not-opened": {
+      const interruption = result.hint?.interruption;
+      if (interruption?.kind) {
+        throwModelSelectionInterruption(interruption);
+      }
+      await logDomFailure(Runtime, logger, "model-switcher-menu");
+      const controls = (result.hint?.visibleControls ?? []).filter(Boolean);
+      const controlsHint = controls.length > 0 ? ` Visible controls: ${controls.join(", ")}.` : "";
+      throw new BrowserAutomationError(
+        `ChatGPT model selector did not open after clicking the model button. The page may be blocked by a verification/login overlay or ChatGPT changed the picker UI.${controlsHint}`,
+        { stage: "model-selection-menu-unavailable", visibleControls: controls },
+      );
+    }
+    case "interrupted":
+      throwModelSelectionInterruption(result.interruption);
     default: {
+      const interruption = result && "hint" in result ? result.hint?.interruption : undefined;
+      if (interruption?.kind) {
+        throwModelSelectionInterruption(interruption);
+      }
       await logDomFailure(Runtime, logger, "model-switcher-button");
       throw new Error("Unable to locate the ChatGPT model selector button.");
     }
   }
+}
+
+function throwModelSelectionInterruption(interruption?: ModelSelectionInterruption): never {
+  const kind = interruption?.kind ?? "manual-verification-required";
+  const evidence = interruption?.evidence?.filter(Boolean) ?? [];
+  const evidenceHint = evidence.length > 0 ? ` Detected: ${evidence.join(", ")}.` : "";
+  if (kind === "cloudflare-challenge" || kind === "manual-verification-required") {
+    throw new BrowserAutomationError(
+      `Cloudflare or manual verification is blocking ChatGPT model selection.${evidenceHint} Complete the verification in the open browser, then rerun Oracle.`,
+      { stage: "cloudflare-challenge", reason: kind, interruption },
+    );
+  }
+  throw new BrowserAutomationError(
+    `ChatGPT login is required before Oracle can select a browser model.${evidenceHint} Log in to ChatGPT in the open Chrome profile, then rerun Oracle.`,
+    { stage: "chatgpt-login-required", reason: kind, interruption },
+  );
 }
 
 function assertResolvedModelSelection(desiredModel: string, resolvedLabel: string): void {
@@ -133,6 +186,7 @@ function buildModelSelectionExpression(
     const COMPOSER_SIGNAL_ALLOW_BLANK = ${composerAllowBlankLiteral};
     const INITIAL_WAIT_MS = 150;
     const REOPEN_INTERVAL_MS = 400;
+    const MENU_OPEN_GRACE_MS = 4000;
     const MAX_WAIT_MS = 20000;
     const SETTLE_WAIT_MS = 1500;
     const normalizeText = (value) => {
@@ -144,6 +198,82 @@ function buildModelSelectionExpression(
         .replace(/[^a-z0-9\\u4e00-\\u9fff]+/g, ' ')
         .replace(/\\s+/g, ' ')
         .trim();
+    };
+    const isVisible = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle(node);
+      if (!style) return false;
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+      }
+      return true;
+    };
+    const readableLabelFor = (node) =>
+      (node?.textContent || node?.getAttribute?.('aria-label') || node?.getAttribute?.('title') || '').trim();
+    const getMenuRoots = () =>
+      Array.from(document.querySelectorAll(${menuContainerLiteral})).filter((node) => isVisible(node));
+    const collectVisibleControls = () => {
+      const controls = Array.from(document.querySelectorAll('button,a,[role="button"],[role="menuitem"],[role="menuitemradio"]'))
+        .filter((node) => isVisible(node))
+        .map(readableLabelFor)
+        .filter(Boolean);
+      return Array.from(new Set(controls)).slice(0, 12);
+    };
+    const detectPageInterruption = () => {
+      const title = document.title || '';
+      const url = window.location.href || '';
+      const rawBody = document.body?.innerText || '';
+      const text = normalizeText([title, url, rawBody.slice(0, 20000)].join(' '));
+      const evidence = [];
+      const pushEvidence = (label) => {
+        if (label && !evidence.includes(label)) evidence.push(label);
+      };
+      const hasCloudflareDom = Boolean(
+        document.querySelector(
+          'script[src*="challenge-platform"], iframe[src*="challenges.cloudflare.com"], input[name="cf-turnstile-response"], [data-cf-beacon], [id^="cf-"], [class*="cf-turnstile"]',
+        )
+      );
+      if (hasCloudflareDom) pushEvidence('cloudflare challenge markup');
+      if (text.includes('just a moment')) pushEvidence('Just a moment');
+      if (text.includes('checking your browser')) pushEvidence('checking your browser');
+      if (text.includes('verify you are human')) pushEvidence('verify you are human');
+      if (text.includes('review the security')) pushEvidence('security review');
+      if (text.includes('cloudflare')) pushEvidence('Cloudflare');
+      if (url.includes('/cdn-cgi/') || url.includes('challenges.cloudflare.com')) {
+        pushEvidence('Cloudflare challenge URL');
+      }
+      if (hasCloudflareDom || evidence.some((label) => /cloudflare|just a moment|checking your browser|challenge url/i.test(label))) {
+        return { kind: 'cloudflare-challenge', title, url, evidence };
+      }
+      if (
+        text.includes('human verification') ||
+        text.includes('captcha') ||
+        text.includes('confirm you are human') ||
+        text.includes('请验证') ||
+        text.includes('人机验证')
+      ) {
+        pushEvidence('manual verification');
+        return { kind: 'manual-verification-required', title, url, evidence };
+      }
+      const loginCta = Array.from(document.querySelectorAll('a,button')).some((node) => {
+        if (!isVisible(node)) return false;
+        const label = normalizeText(readableLabelFor(node));
+        const href = node.getAttribute?.('href') || '';
+        return (
+          label === 'log in' ||
+          label === 'login' ||
+          label === 'sign in' ||
+          label.includes('continue with google') ||
+          href.includes('/auth/login') ||
+          href.includes('/login')
+        );
+      });
+      if (loginCta && !document.querySelector(BUTTON_SELECTOR)) {
+        return { kind: 'chatgpt-login-required', title, url, evidence: ['login prompt'] };
+      }
+      return null;
     };
     // Normalize every candidate token to keep fuzzy matching deterministic.
     const normalizedTarget = normalizeText(PRIMARY_LABEL);
@@ -172,7 +302,7 @@ function buildModelSelectionExpression(
     const wantsThinking = hasThinkingText(normalizedTarget);
     const wantsExtended = hasExtendedText(normalizedTarget);
     const isTargetGpt55VisibleAlias = (value) => {
-      if (!(wantsPro && wantsExtended)) return false;
+      if (!(wantsPro && (wantsExtended || desiredVersion === '5-5'))) return false;
       const label = normalizeText(value);
       const labelVersion = label.match(/\\b([0-9]+)\\s+([0-9]+)\\b/);
       const candidateVersion = labelVersion ? labelVersion[1] + '-' + labelVersion[2] : null;
@@ -203,8 +333,12 @@ function buildModelSelectionExpression(
       return null;
     };
 
+    const initialInterruption = detectPageInterruption();
     const button = document.querySelector(BUTTON_SELECTOR);
     if (!button) {
+      if (initialInterruption) {
+        return { status: 'interrupted', interruption: initialInterruption };
+      }
       return { status: 'button-missing' };
     }
 
@@ -459,7 +593,7 @@ function buildModelSelectionExpression(
     const findBestOption = () => {
       // Walk through every menu item and keep whichever earns the highest score.
       let bestMatch = null;
-      const menus = Array.from(document.querySelectorAll(${menuContainerLiteral}));
+      const menus = getMenuRoots();
       for (const menu of menus) {
         const buttons = Array.from(menu.querySelectorAll(${menuItemLiteral}));
         for (const option of buttons) {
@@ -515,18 +649,21 @@ function buildModelSelectionExpression(
         return body.includes('temporary chat');
       };
       const collectAvailableOptions = () => {
-        const menuRoots = Array.from(document.querySelectorAll(${menuContainerLiteral}));
-        const nodes = menuRoots.length > 0
-          ? menuRoots.flatMap((root) => Array.from(root.querySelectorAll(${menuItemLiteral})))
-          : Array.from(document.querySelectorAll(${menuItemLiteral}));
+        const menuRoots = getMenuRoots();
+        const nodes = menuRoots.flatMap((root) => Array.from(root.querySelectorAll(${menuItemLiteral})));
         const labels = nodes
           .map((node) => (node?.textContent ?? '').trim())
           .filter(Boolean)
           .filter((label, index, arr) => arr.indexOf(label) === index);
         return labels.slice(0, 12);
       };
+      let menuEverOpened = false;
       const ensureMenuOpen = () => {
-        const menuOpen = document.querySelector('[role="menu"], [data-radix-collection-root]');
+        const menuOpen = getMenuRoots().length > 0;
+        if (menuOpen) {
+          menuEverOpened = true;
+          return;
+        }
         if (!menuOpen && performance.now() - lastPointerClick > REOPEN_INTERVAL_MS) {
           pointerClick();
         }
@@ -542,6 +679,18 @@ function buildModelSelectionExpression(
           await openDelay();
         }
         ensureMenuOpen();
+        const interruption = detectPageInterruption();
+        if (interruption && performance.now() - start > INITIAL_WAIT_MS) {
+          resolve({ status: 'interrupted', interruption });
+          return;
+        }
+        if (!menuEverOpened && performance.now() - start > MENU_OPEN_GRACE_MS) {
+          resolve({
+            status: 'model-menu-not-opened',
+            hint: { visibleControls: collectVisibleControls(), interruption: detectPageInterruption() },
+          });
+          return;
+        }
         const match = findBestOption();
         if (match) {
           if (activeSelectionMatchesTarget()) {

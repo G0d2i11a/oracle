@@ -122,6 +122,20 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("desiredVersion === '5-5'");
   });
 
+  it("accepts the current Extended Pro page label when targeting GPT-5.5 Pro", () => {
+    const expression = buildModelSelectionExpressionForTest("5.5 Pro");
+    expect(expression).toContain("wantsPro && (wantsExtended || desiredVersion === '5-5')");
+    expect(() => assertResolvedModelSelectionForTest("5.5 Pro", "Extended Pro")).not.toThrow();
+  });
+
+  it("detects verification pages and missing model menus before retrying indefinitely", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain("const detectPageInterruption = () =>");
+    expect(expression).toContain("MENU_OPEN_GRACE_MS");
+    expect(expression).toContain("model-menu-not-opened");
+    expect(expression).toContain("verify you are human");
+  });
+
   it("recognizes ChatGPT plus the Pro composer pill as the current Pro model", () => {
     const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
     expect(expression).toContain("const hasProComposerPill = () =>");

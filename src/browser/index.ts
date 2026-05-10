@@ -998,6 +998,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           appliedCookies === 0
             ? " No cookies were applied; log in to ChatGPT in Chrome or provide inline cookies (--browser-inline-cookies[(-file)] or ORACLE_BROWSER_COOKIES_JSON)."
             : "";
+        if (error instanceof BrowserAutomationError) {
+          if (!hint) {
+            throw error;
+          }
+          throw new BrowserAutomationError(`${base}${hint}`, error.details, error);
+        }
         throw new Error(`${base}${hint}`);
       });
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));

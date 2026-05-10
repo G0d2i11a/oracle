@@ -56,6 +56,48 @@ describe("ensureModelSelection", () => {
     );
   });
 
+  test("throws structured error when verification blocks model selection", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            status: "interrupted",
+            interruption: {
+              kind: "cloudflare-challenge",
+              title: "Just a moment...",
+              evidence: ["Just a moment"],
+            },
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(ensureModelSelection(runtime, "GPT-5.5 Pro", logger)).rejects.toMatchObject({
+      name: "BrowserAutomationError",
+      details: expect.objectContaining({
+        stage: "cloudflare-challenge",
+        reason: "cloudflare-challenge",
+      }),
+    });
+  });
+
+  test("fails fast when the model menu never opens", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            status: "model-menu-not-opened",
+            hint: { visibleControls: ["Search chats", "Projects", "Extended Pro"] },
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(ensureModelSelection(runtime, "GPT-5.5 Pro", logger)).rejects.toThrow(
+      /model selector did not open/i,
+    );
+  });
+
   test("throws when button missing", async () => {
     const runtime = {
       evaluate: vi.fn().mockResolvedValue({ result: { value: { status: "button-missing" } } }),
