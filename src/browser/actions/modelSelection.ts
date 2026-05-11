@@ -26,77 +26,153 @@ export async function ensureModelSelection(
   desiredModel: string,
   logger: BrowserLogger,
   strategy: BrowserModelStrategy = "select",
+  options: ModelSelectionWaitOptions = {},
 ) {
-  const outcome = await Runtime.evaluate({
-    expression: buildModelSelectionExpression(desiredModel, strategy),
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  const waitTimeoutMs = options.interruptionTimeoutMs ?? MODEL_SELECTION_INTERRUPTION_TIMEOUT_MS;
+  const pollMs = options.interruptionPollMs ?? MODEL_SELECTION_INTERRUPTION_POLL_MS;
+  const logEveryMs = options.interruptionLogEveryMs ?? MODEL_SELECTION_INTERRUPTION_LOG_EVERY_MS;
+  let waitStartedAt: number | null = null;
+  let nextLogAt = 0;
+  let lastInterruption: ModelSelectionInterruption | undefined;
 
-  const result = outcome.result?.value as
-    | { status: "already-selected"; label?: string | null }
-    | { status: "switched"; label?: string | null }
-    | { status: "switched-best-effort"; label?: string | null }
-    | {
-        status: "option-not-found";
-        hint?: { temporaryChat?: boolean; availableOptions?: string[] };
-      }
-    | {
-        status: "model-menu-not-opened";
-        hint?: { visibleControls?: string[]; interruption?: ModelSelectionInterruption };
-      }
-    | { status: "button-missing"; hint?: { interruption?: ModelSelectionInterruption } }
-    | { status: "interrupted"; interruption?: ModelSelectionInterruption }
-    | undefined;
+  while (true) {
+    const outcome = await Runtime.evaluate({
+      expression: buildModelSelectionExpression(desiredModel, strategy),
+      awaitPromise: true,
+      returnByValue: true,
+    });
 
-  switch (result?.status) {
-    case "already-selected":
-    case "switched":
-    case "switched-best-effort": {
-      const label = result.label ?? desiredModel;
-      if (strategy !== "current") {
-        assertResolvedModelSelection(desiredModel, label);
+    const result = outcome.result?.value as ModelSelectionResult | undefined;
+    const interruption = getRetryableModelSelectionInterruption(result);
+    if (interruption) {
+      lastInterruption = interruption;
+      const now = Date.now();
+      if (waitStartedAt === null) {
+        waitStartedAt = now;
+        nextLogAt = now + logEveryMs;
+        logger(
+          "Cloudflare or manual verification appeared during model selection; waiting for the page to clear...",
+        );
+      } else if (now >= nextLogAt) {
+        const remainingSeconds = Math.max(
+          0,
+          Math.ceil((waitStartedAt + waitTimeoutMs - now) / 1000),
+        );
+        logger(
+          `Still waiting for model-selection verification clearance (${remainingSeconds}s remaining)...`,
+        );
+        nextLogAt = now + logEveryMs;
       }
-      logger(`Model picker: ${label}`);
-      return;
-    }
-    case "option-not-found": {
-      await logDomFailure(Runtime, logger, "model-switcher-option");
-      const isTemporary = result.hint?.temporaryChat ?? false;
-      const available = (result.hint?.availableOptions ?? []).filter(Boolean);
-      const availableHint = available.length > 0 ? ` Available: ${available.join(", ")}.` : "";
-      const tempHint =
-        isTemporary && /\bpro\b/i.test(desiredModel)
-          ? ' You are in Temporary Chat mode; Pro models are not available there. Remove "temporary-chat=true" from --chatgpt-url or use a non-Pro model (e.g. gpt-5.2).'
-          : "";
-      throw new Error(
-        `Unable to find model option matching "${desiredModel}" in the model switcher.${availableHint}${tempHint}`,
-      );
-    }
-    case "model-menu-not-opened": {
-      const interruption = result.hint?.interruption;
-      if (interruption?.kind) {
-        throwModelSelectionInterruption(interruption);
+
+      if (now - waitStartedAt < waitTimeoutMs) {
+        await delay(pollMs);
+        continue;
       }
-      await logDomFailure(Runtime, logger, "model-switcher-menu");
-      const controls = (result.hint?.visibleControls ?? []).filter(Boolean);
-      const controlsHint = controls.length > 0 ? ` Visible controls: ${controls.join(", ")}.` : "";
-      throw new BrowserAutomationError(
-        `ChatGPT model selector did not open after clicking the model button. The page may be blocked by a verification/login overlay or ChatGPT changed the picker UI.${controlsHint}`,
-        { stage: "model-selection-menu-unavailable", visibleControls: controls },
-      );
+
+      throwModelSelectionInterruption(lastInterruption);
     }
-    case "interrupted":
-      throwModelSelectionInterruption(result.interruption);
-    default: {
-      const interruption = result && "hint" in result ? result.hint?.interruption : undefined;
-      if (interruption?.kind) {
-        throwModelSelectionInterruption(interruption);
+
+    if (waitStartedAt !== null) {
+      logger("Model-selection verification cleared; continuing browser run.");
+      waitStartedAt = null;
+      nextLogAt = 0;
+      lastInterruption = undefined;
+    }
+
+    switch (result?.status) {
+      case "already-selected":
+      case "switched":
+      case "switched-best-effort": {
+        const label = result.label ?? desiredModel;
+        if (strategy !== "current") {
+          assertResolvedModelSelection(desiredModel, label);
+        }
+        logger(`Model picker: ${label}`);
+        return;
       }
-      await logDomFailure(Runtime, logger, "model-switcher-button");
-      throw new Error("Unable to locate the ChatGPT model selector button.");
+      case "option-not-found": {
+        await logDomFailure(Runtime, logger, "model-switcher-option");
+        const isTemporary = result.hint?.temporaryChat ?? false;
+        const available = (result.hint?.availableOptions ?? []).filter(Boolean);
+        const availableHint = available.length > 0 ? ` Available: ${available.join(", ")}.` : "";
+        const tempHint =
+          isTemporary && /\bpro\b/i.test(desiredModel)
+            ? ' You are in Temporary Chat mode; Pro models are not available there. Remove "temporary-chat=true" from --chatgpt-url or use a non-Pro model (e.g. gpt-5.2).'
+            : "";
+        throw new Error(
+          `Unable to find model option matching "${desiredModel}" in the model switcher.${availableHint}${tempHint}`,
+        );
+      }
+      case "model-menu-not-opened": {
+        const interruption = result.hint?.interruption;
+        if (interruption?.kind) {
+          throwModelSelectionInterruption(interruption);
+        }
+        await logDomFailure(Runtime, logger, "model-switcher-menu");
+        const controls = (result.hint?.visibleControls ?? []).filter(Boolean);
+        const controlsHint =
+          controls.length > 0 ? ` Visible controls: ${controls.join(", ")}.` : "";
+        throw new BrowserAutomationError(
+          `ChatGPT model selector did not open after clicking the model button. The page may be blocked by a verification/login overlay or ChatGPT changed the picker UI.${controlsHint}`,
+          { stage: "model-selection-menu-unavailable", visibleControls: controls },
+        );
+      }
+      case "interrupted":
+        throwModelSelectionInterruption(result.interruption);
+      default: {
+        const interruption = result && "hint" in result ? result.hint?.interruption : undefined;
+        if (interruption?.kind) {
+          throwModelSelectionInterruption(interruption);
+        }
+        await logDomFailure(Runtime, logger, "model-switcher-button");
+        throw new Error("Unable to locate the ChatGPT model selector button.");
+      }
     }
   }
+}
+
+type ModelSelectionWaitOptions = {
+  interruptionTimeoutMs?: number;
+  interruptionPollMs?: number;
+  interruptionLogEveryMs?: number;
+};
+
+type ModelSelectionResult =
+  | { status: "already-selected"; label?: string | null }
+  | { status: "switched"; label?: string | null }
+  | { status: "switched-best-effort"; label?: string | null }
+  | {
+      status: "option-not-found";
+      hint?: { temporaryChat?: boolean; availableOptions?: string[] };
+    }
+  | {
+      status: "model-menu-not-opened";
+      hint?: { visibleControls?: string[]; interruption?: ModelSelectionInterruption };
+    }
+  | { status: "button-missing"; hint?: { interruption?: ModelSelectionInterruption } }
+  | { status: "interrupted"; interruption?: ModelSelectionInterruption };
+
+const MODEL_SELECTION_INTERRUPTION_TIMEOUT_MS = 10 * 60_000;
+const MODEL_SELECTION_INTERRUPTION_POLL_MS = 1_000;
+const MODEL_SELECTION_INTERRUPTION_LOG_EVERY_MS = 30_000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function getRetryableModelSelectionInterruption(
+  result: ModelSelectionResult | undefined,
+): ModelSelectionInterruption | undefined {
+  const interruption =
+    result?.status === "interrupted"
+      ? result.interruption
+      : result?.status === "model-menu-not-opened" || result?.status === "button-missing"
+        ? result.hint?.interruption
+        : undefined;
+  const kind = interruption?.kind;
+  return kind === "cloudflare-challenge" || kind === "manual-verification-required"
+    ? interruption
+    : undefined;
 }
 
 function throwModelSelectionInterruption(interruption?: ModelSelectionInterruption): never {
@@ -342,7 +418,11 @@ function buildModelSelectionExpression(
       return { status: 'button-missing' };
     }
 
+    const menuIsOpen = () => getMenuRoots().length > 0;
     const closeMenu = () => {
+      if (!menuIsOpen()) {
+        return;
+      }
       try {
         if (dispatchClickSequence(button)) {
           lastPointerClick = performance.now();
@@ -615,9 +695,13 @@ function buildModelSelectionExpression(
       }
       return bestMatch;
     };
-    const waitForTargetSelection = (previousButtonLabel, previousComposerSignal) => new Promise((resolve) => {
+    const waitForTargetSelection = (clickedNode, previousButtonLabel, previousComposerSignal) => new Promise((resolve) => {
       const waitStart = performance.now();
       const check = () => {
+        if (optionIsSelected(clickedNode)) {
+          resolve('target');
+          return;
+        }
         if (activeSelectionMatchesTarget()) {
           resolve('target');
           return;
@@ -659,7 +743,7 @@ function buildModelSelectionExpression(
       };
       let menuEverOpened = false;
       const ensureMenuOpen = () => {
-        const menuOpen = getMenuRoots().length > 0;
+        const menuOpen = menuIsOpen();
         if (menuOpen) {
           menuEverOpened = true;
           return;
@@ -669,8 +753,12 @@ function buildModelSelectionExpression(
         }
       };
 
-      // Open once and wait a tick before first scan.
-      pointerClick();
+      // Open once and wait a tick before first scan, unless the picker is already open.
+      if (menuIsOpen()) {
+        menuEverOpened = true;
+      } else {
+        pointerClick();
+      }
       const openDelay = () => new Promise((r) => setTimeout(r, INITIAL_WAIT_MS));
       let initialized = false;
       const attempt = async () => {
@@ -684,6 +772,13 @@ function buildModelSelectionExpression(
           resolve({ status: 'interrupted', interruption });
           return;
         }
+        if (performance.now() - start > MAX_WAIT_MS) {
+          resolve({
+            status: 'option-not-found',
+            hint: { temporaryChat: detectTemporaryChat(), availableOptions: collectAvailableOptions() },
+          });
+          return;
+        }
         if (!menuEverOpened && performance.now() - start > MENU_OPEN_GRACE_MS) {
           resolve({
             status: 'model-menu-not-opened',
@@ -693,6 +788,11 @@ function buildModelSelectionExpression(
         }
         const match = findBestOption();
         if (match) {
+          if (optionIsSelected(match.node)) {
+            closeMenu();
+            resolve({ status: 'already-selected', label: getResolvedLabel(match.label) });
+            return;
+          }
           if (activeSelectionMatchesTarget()) {
             closeMenu();
             resolve({ status: 'already-selected', label: getResolvedLabel(match.label) });
@@ -709,20 +809,13 @@ function buildModelSelectionExpression(
             return;
           }
           // Wait for the selected model signal to settle before reopening the picker.
-          waitForTargetSelection(previousButtonLabel, previousComposerSignal).then((selectionSettled) => {
+          waitForTargetSelection(match.node, previousButtonLabel, previousComposerSignal).then((selectionSettled) => {
             if (selectionSettled === 'target') {
               closeMenu();
               resolve({ status: 'switched', label: getResolvedLabel(match.label) });
               return;
             }
             attempt();
-          });
-          return;
-        }
-        if (performance.now() - start > MAX_WAIT_MS) {
-          resolve({
-            status: 'option-not-found',
-            hint: { temporaryChat: detectTemporaryChat(), availableOptions: collectAvailableOptions() },
           });
           return;
         }

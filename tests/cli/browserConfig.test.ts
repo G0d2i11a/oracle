@@ -15,7 +15,7 @@ describe("buildBrowserConfig", () => {
       headless: undefined,
       keepBrowser: undefined,
       hideWindow: undefined,
-      desiredModel: "GPT-5.5 Pro",
+      desiredModel: "5.5 Extended Pro",
       debug: undefined,
       allowCookieErrors: true,
       researchMode: "off",
@@ -122,6 +122,16 @@ describe("buildBrowserConfig", () => {
       browserModelLabel: "gpt-5.1",
     });
     expect(config.desiredModel).toBe("GPT-5.2");
+  });
+
+  test("canonicalizes generic Pro labels to current Extended Pro", async () => {
+    expect(resolveBrowserModelLabel("Pro", "gpt-5.5-pro")).toBe("5.5 Extended Pro");
+    expect(resolveBrowserModelLabel("5.5 Pro", "gpt-5.5-pro")).toBe("5.5 Extended Pro");
+    const config = await buildBrowserConfig({
+      model: "gpt-5.5-pro",
+      browserModelLabel: resolveBrowserModelLabel("Pro", "gpt-5.5-pro"),
+    });
+    expect(config.desiredModel).toBe("5.5 Extended Pro");
   });
 
   test("maps thinking Gemini model to thinking label", async () => {
@@ -313,13 +323,13 @@ describe("buildBrowserConfig", () => {
 
 describe("resolveBrowserModelLabel", () => {
   test("returns canonical ChatGPT label when CLI value matches API model", () => {
-    expect(resolveBrowserModelLabel("gpt-5.5-pro", "gpt-5.5-pro")).toBe("GPT-5.5 Pro");
+    expect(resolveBrowserModelLabel("gpt-5.5-pro", "gpt-5.5-pro")).toBe("5.5 Extended Pro");
     expect(resolveBrowserModelLabel("gpt-5.5", "gpt-5.5")).toBe("Thinking 5.5");
     expect(resolveBrowserModelLabel("gpt-5.4-pro", "gpt-5.4-pro")).toBe("GPT-5.4 Pro");
     expect(resolveBrowserModelLabel("gpt-5.4", "gpt-5.4")).toBe("Thinking 5.4");
-    expect(resolveBrowserModelLabel("gpt-5-pro", "gpt-5-pro")).toBe("GPT-5.5 Pro");
-    expect(resolveBrowserModelLabel("gpt-5.2-pro", "gpt-5.2-pro")).toBe("GPT-5.5 Pro");
-    expect(resolveBrowserModelLabel("gpt-5.1-pro", "gpt-5.1-pro")).toBe("GPT-5.5 Pro");
+    expect(resolveBrowserModelLabel("gpt-5-pro", "gpt-5-pro")).toBe("5.5 Extended Pro");
+    expect(resolveBrowserModelLabel("gpt-5.2-pro", "gpt-5.2-pro")).toBe("5.5 Extended Pro");
+    expect(resolveBrowserModelLabel("gpt-5.1-pro", "gpt-5.1-pro")).toBe("5.5 Extended Pro");
     expect(resolveBrowserModelLabel("GPT-5.1", "gpt-5.1")).toBe("GPT-5.2");
   });
 
@@ -332,7 +342,7 @@ describe("resolveBrowserModelLabel", () => {
   });
 
   test("supports undefined or whitespace-only input", () => {
-    expect(resolveBrowserModelLabel(undefined, "gpt-5.2-pro")).toBe("GPT-5.5 Pro");
+    expect(resolveBrowserModelLabel(undefined, "gpt-5.2-pro")).toBe("5.5 Extended Pro");
     expect(resolveBrowserModelLabel("   ", "gpt-5.1")).toBe("GPT-5.2");
   });
 

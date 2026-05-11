@@ -29,6 +29,8 @@
 
 - Browser/MCP: harden ChatGPT Pro browser consults with louder GPT-5.5 Pro selection validation, resolved MCP dry-run details, assistant-timeout diagnostics, incomplete-capture reattach metadata, and clean Pro Extended live-run metadata. (#177) — thanks @pdurlej.
 - Browser: detect Cloudflare/manual-verification interruptions during model selection, stop retry-clicking when the picker never opens, and accept ChatGPT's current `Extended Pro` label for GPT-5.5 Pro browser runs.
+- Browser: target ChatGPT's `5.5 Extended Pro` picker label by default for GPT-5.5 Pro browser runs.
+- Browser: wait and retry when ChatGPT briefly shows a Cloudflare `Just a moment...` interstitial during model selection instead of immediately failing the browser run.
 - Browser: clear stale ChatGPT composer drafts before initial browser submissions and ignore model-picker thinking-effort controls while scanning model rows. (#176) — thanks @oirehT.
 - Browser: keep the completed conversation tab open when `--browser-keep-browser` is set so `oracle status --browser-tabs`, harvest, and `--browser-tab current` can inspect/reuse it.
 - Browser: retry Chrome remote-debugging approval `403` responses for `--browser-attach-running` and report the actionable approval/toggle guidance instead of a raw websocket error.

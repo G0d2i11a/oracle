@@ -95,6 +95,8 @@ describe("browser model selection matchers", () => {
   it("closes the menu after a successful selection path", () => {
     const expression = buildModelSelectionExpressionForTest("gpt-5.4");
     expect(expression).toContain("const closeMenu = () =>");
+    expect(expression).toContain("const menuIsOpen = () =>");
+    expect(expression).toContain("if (!menuIsOpen()) {");
     expect(expression).toContain("key: 'Escape'");
     expect(expression).toContain("closeMenu();");
     expect(expression).toContain("COMPOSER_MODEL_SIGNAL_SELECTOR");
@@ -168,6 +170,23 @@ describe("browser model selection matchers", () => {
     );
   });
 
+  it("accepts the clicked target option when ChatGPT marks it selected", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain("optionIsSelected(clickedNode)");
+  });
+
+  it("does not reopen an already-open model picker before scanning", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain("if (menuIsOpen()) {");
+    expect(expression).toContain("unless the picker is already open");
+  });
+
+  it("bounds repeated model-option clicks when ChatGPT does not settle selection", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain("performance.now() - start > MAX_WAIT_MS");
+    expect(expression).toContain("availableOptions: collectAvailableOptions()");
+  });
+
   it("fails loudly if post-selection state resolves to Thinking instead of Pro Extended", () => {
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "Thinking 5.5 Heavy")).toThrow(
       /requires GPT-5.5 Pro Extended/,
@@ -219,7 +238,7 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("const readComposerModelSignal = () =>");
     expect(expression).toContain("const activeSelectionMatchesTarget = () =>");
     expect(expression).toContain(
-      "const waitForTargetSelection = (previousButtonLabel, previousComposerSignal) =>",
+      "const waitForTargetSelection = (clickedNode, previousButtonLabel, previousComposerSignal) =>",
     );
   });
 

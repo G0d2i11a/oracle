@@ -29,14 +29,14 @@ const DEFAULT_CHROME_PROFILE = "Default";
 // The browser label is passed to the model picker which fuzzy-matches against ChatGPT's UI.
 const BROWSER_MODEL_LABELS: [ModelName, string][] = [
   // Most specific first (e.g., "gpt-5.2-thinking" before "gpt-5.2")
-  ["gpt-5.5-pro", "GPT-5.5 Pro"],
+  ["gpt-5.5-pro", "5.5 Extended Pro"],
   ["gpt-5.5", "Thinking 5.5"],
   ["gpt-5.4-pro", "GPT-5.4 Pro"],
   ["gpt-5.2-thinking", "GPT-5.2 Thinking"],
   ["gpt-5.2-instant", "GPT-5.2 Instant"],
-  ["gpt-5.2-pro", "GPT-5.5 Pro"],
-  ["gpt-5.1-pro", "GPT-5.5 Pro"],
-  ["gpt-5-pro", "GPT-5.5 Pro"],
+  ["gpt-5.2-pro", "5.5 Extended Pro"],
+  ["gpt-5.1-pro", "5.5 Extended Pro"],
+  ["gpt-5-pro", "5.5 Extended Pro"],
   // Base models last (least specific)
   ["gpt-5.4", "Thinking 5.4"],
   ["gpt-5.2", "GPT-5.2"], // Selects "Auto" in ChatGPT UI
@@ -303,7 +303,25 @@ export function resolveBrowserModelLabel(input: string | undefined, model: Model
   if (normalizedInput === model.toLowerCase()) {
     return mapModelToBrowserLabel(model);
   }
+  if (normalizeChatGptModelForBrowser(model) === "gpt-5.5-pro" && isGenericProBrowserAlias(normalizedInput)) {
+    return mapModelToBrowserLabel(model);
+  }
   return trimmed;
+}
+
+function isGenericProBrowserAlias(normalizedInput: string): boolean {
+  const normalized = normalizedInput
+    .replace(/[^a-z0-9.]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (normalized === "pro" || normalized === "gpt pro" || normalized === "chatgpt pro") {
+    return true;
+  }
+  const mentions55 =
+    normalized.includes("5.5") ||
+    normalized.includes("5 5") ||
+    normalized.includes("55");
+  return mentions55 && normalized.includes("pro") && !normalized.includes("extended");
 }
 
 function parseRemoteChromeTarget(raw: string): { host: string; port: number } {

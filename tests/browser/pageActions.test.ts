@@ -56,7 +56,43 @@ describe("ensureModelSelection", () => {
     );
   });
 
-  test("throws structured error when verification blocks model selection", async () => {
+  test("waits and retries when transient verification blocks model selection", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              status: "interrupted",
+              interruption: {
+                kind: "cloudflare-challenge",
+                title: "Just a moment...",
+                evidence: ["Just a moment"],
+              },
+            },
+          },
+        })
+        .mockResolvedValueOnce({
+          result: { value: { status: "already-selected", label: "GPT-5.5 Pro" } },
+        }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      ensureModelSelection(runtime, "GPT-5.5 Pro", logger, "select", {
+        interruptionPollMs: 0,
+        interruptionTimeoutMs: 1000,
+      }),
+    ).resolves.toBeUndefined();
+    expect(logger).toHaveBeenCalledWith(
+      "Cloudflare or manual verification appeared during model selection; waiting for the page to clear...",
+    );
+    expect(logger).toHaveBeenCalledWith(
+      "Model-selection verification cleared; continuing browser run.",
+    );
+    expect(logger).toHaveBeenCalledWith("Model picker: GPT-5.5 Pro");
+  });
+
+  test("throws structured error when model selection verification does not clear", async () => {
     const runtime = {
       evaluate: vi.fn().mockResolvedValue({
         result: {
@@ -72,7 +108,11 @@ describe("ensureModelSelection", () => {
       }),
     } as unknown as ChromeClient["Runtime"];
 
-    await expect(ensureModelSelection(runtime, "GPT-5.5 Pro", logger)).rejects.toMatchObject({
+    await expect(
+      ensureModelSelection(runtime, "GPT-5.5 Pro", logger, "select", {
+        interruptionTimeoutMs: 0,
+      }),
+    ).rejects.toMatchObject({
       name: "BrowserAutomationError",
       details: expect.objectContaining({
         stage: "cloudflare-challenge",

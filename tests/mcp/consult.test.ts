@@ -160,7 +160,7 @@ describe("summarizeModelRunsForConsult", () => {
         browserFollowUps: ["challenge", "final"],
       },
       browserConfig: {
-        desiredModel: "GPT-5.5 Pro",
+        desiredModel: "5.5 Extended Pro",
         thinkingTime: "extended",
         modelStrategy: "select",
         researchMode: "off",
@@ -177,7 +177,7 @@ describe("summarizeModelRunsForConsult", () => {
       files: ["README.md"],
       followUpCount: 2,
       browser: {
-        desiredModel: "GPT-5.5 Pro",
+        desiredModel: "5.5 Extended Pro",
         thinkingTime: "extended",
         attachments: "always",
         bundleFiles: true,
@@ -227,7 +227,7 @@ describe("summarizeModelRunsForConsult", () => {
         resolvedEngine: "browser",
         model: "gpt-5.5-pro",
         browser: expect.objectContaining({
-          desiredModel: "GPT-5.5 Pro",
+          desiredModel: "5.5 Extended Pro",
           thinkingTime: "extended",
           modelStrategy: "select",
         }),
