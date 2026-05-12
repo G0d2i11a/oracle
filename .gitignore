@@ -4,6 +4,7 @@ node_modules
 coverage
 npm-debug.log*
 .bun-check/
+.tmp/
 dist/
 build/
 *.tsbuildinfo

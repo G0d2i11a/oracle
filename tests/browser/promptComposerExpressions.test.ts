@@ -9,6 +9,7 @@ describe("prompt composer attachment expressions", () => {
     expect(expression).toContain('input[type="file"]');
     expect(expression).toContain('[aria-label*="Remove file"]');
     expect(expression).toContain("getAttribute?.('aria-label')");
+    expect(expression).toContain("\\s*\\(\\d+\\)");
     expect(expression).not.toContain("a,div,span");
     expect(expression).not.toContain(
       'document.querySelectorAll(\'[data-testid*="chip"],[data-testid*="attachment"],a,div,span\')',

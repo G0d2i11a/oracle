@@ -423,6 +423,57 @@ describe("runSubmissionWithRecoveryForTest", () => {
       }),
     ).rejects.toThrow(/prompt too large again/i);
   });
+
+  test("uses bundled fallback after attachment upload verification failure", async () => {
+    const submit = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Attachment did not appear in ChatGPT composer."))
+      .mockResolvedValueOnce({
+        baselineTurns: 3,
+        baselineAssistantText: "done",
+      });
+    const prepareFallbackSubmission = vi.fn().mockResolvedValue(undefined);
+    const logger = vi.fn<(message: string) => void>();
+
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "full prompt",
+        attachments: [
+          { path: "/repo/a.txt", displayPath: "a.txt", sizeBytes: 12 },
+          { path: "/repo/b.txt", displayPath: "b.txt", sizeBytes: 12 },
+        ],
+        fallbackSubmission: {
+          prompt: "full prompt",
+          attachments: [
+            {
+              path: "/tmp/oracle-browser-bundle/attachments-bundle.txt",
+              displayPath: "attachments-bundle.txt",
+              sizeBytes: 24,
+            },
+          ],
+        },
+        submit,
+        reloadPromptComposer: vi.fn().mockResolvedValue(undefined),
+        prepareFallbackSubmission,
+        logger,
+      }),
+    ).resolves.toEqual({
+      baselineTurns: 3,
+      baselineAssistantText: "done",
+    });
+
+    expect(prepareFallbackSubmission).toHaveBeenCalledTimes(1);
+    expect(logger).toHaveBeenCalledWith(
+      "[browser] Attachment upload verification failed; retrying with bundled file upload.",
+    );
+    expect(submit).toHaveBeenNthCalledWith(1, "full prompt", [
+      expect.objectContaining({ displayPath: "a.txt" }),
+      expect.objectContaining({ displayPath: "b.txt" }),
+    ]);
+    expect(submit).toHaveBeenNthCalledWith(2, "full prompt", [
+      expect.objectContaining({ displayPath: "attachments-bundle.txt" }),
+    ]);
+  });
 });
 
 describe("resolveRemoteTabLeaseProfileDirForTest", () => {

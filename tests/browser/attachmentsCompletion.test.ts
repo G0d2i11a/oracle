@@ -84,6 +84,53 @@ describe("attachment completion fallbacks", () => {
     useRealTime();
   });
 
+  test("waitForAttachmentCompletion accepts ChatGPT duplicate-suffixed attachment names", async () => {
+    useFakeTime();
+
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            state: "ready",
+            uploading: false,
+            filesAttached: true,
+            attachedNames: ["README(15).md", "INDEX(3).md"],
+            inputNames: [],
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    const promise = waitForAttachmentCompletion(runtime, 10_000, ["README.md", "INDEX.md"]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(promise).resolves.toBeUndefined();
+    useRealTime();
+  });
+
+  test("waitForAttachmentCompletion does not confuse short basenames with longer filenames", async () => {
+    useFakeTime();
+
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            state: "ready",
+            uploading: false,
+            filesAttached: true,
+            attachedNames: ["00-prd-index(3).json"],
+            inputNames: [],
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    const promise = waitForAttachmentCompletion(runtime, 800, ["INDEX.md"]);
+    const assertion = expect(promise).rejects.toThrow(/did not finish uploading/i);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await assertion;
+    useRealTime();
+  });
+
   test("waitForAttachmentCompletion times out when send button stays disabled (upload likely in progress)", async () => {
     useFakeTime();
 
@@ -150,6 +197,25 @@ describe("sent turn attachment verification", () => {
 
     await expect(
       waitForUserTurnAttachments(runtime, ["oracle-attach-verify.txt"], 1000),
+    ).resolves.toBe(true);
+  });
+
+  test("waitForUserTurnAttachments accepts ChatGPT duplicate-suffixed attachment names", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            ok: true,
+            text: "Attached files: README(15).md and INDEX(3).md",
+            attrs: [],
+            hasAttachmentUi: true,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      waitForUserTurnAttachments(runtime, ["README.md", "INDEX.md"], 1000),
     ).resolves.toBe(true);
   });
 

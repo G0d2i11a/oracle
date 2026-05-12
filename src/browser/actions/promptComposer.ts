@@ -21,6 +21,49 @@ const ENTER_KEY_EVENT = {
 } as const;
 const ENTER_KEY_TEXT = "\r";
 
+type PromptComposerCandidateLike = {
+  tagName?: string;
+  isContentEditable?: boolean;
+  getAttribute?: (name: string) => string | null | undefined;
+  classList?: { contains(token: string): boolean };
+};
+
+const RICH_PROMPT_SELECTORS = [
+  ".ProseMirror",
+  '[contenteditable="true"][role="textbox"]',
+  '[contenteditable="true"][data-virtualkeyboard="true"]',
+] as const;
+
+const PROMPT_COMPOSER_PRIORITY_SOURCE = `((node) => {
+  const tag = String(node?.tagName ?? '').toUpperCase();
+  const isRich =
+    node?.isContentEditable === true ||
+    node?.getAttribute?.('contenteditable') === 'true' ||
+    node?.getAttribute?.('data-virtualkeyboard') === 'true' ||
+    node?.classList?.contains('ProseMirror') === true ||
+    tag === 'DIV';
+  if (isRich) return 0;
+  if (tag === 'TEXTAREA') return 2;
+  return 1;
+})`;
+
+function promptComposerPriority(node: PromptComposerCandidateLike): number {
+  const tag = String(node.tagName ?? "").toUpperCase();
+  const isRich =
+    node.isContentEditable === true ||
+    node.getAttribute?.("contenteditable") === "true" ||
+    node.getAttribute?.("data-virtualkeyboard") === "true" ||
+    node.classList?.contains("ProseMirror") === true ||
+    tag === "DIV";
+  if (isRich) {
+    return 0;
+  }
+  if (tag === "TEXTAREA") {
+    return 2;
+  }
+  return 1;
+}
+
 function normalizePromptForComparison(value: string): string {
   let text = value?.toLowerCase?.() ?? "";
   text = text.replace(/\`\`\`[^\n]*\n([\s\S]*?)\`\`\`/g, " $1 ");
@@ -40,6 +83,12 @@ function composerContainsPrompt(prompt: string, observedValues: string[]): boole
     .map((value) => normalizePromptForComparison(value))
     .some((value) => value.includes(requiredProbe));
 }
+
+const ATTACHMENT_NAME_NORMALIZER_SOURCE = `((value) => String(value || '')
+  .toLowerCase()
+  .replace(/\\s+/g, ' ')
+  .replace(/\\s*\\(\\d+\\)(?=(?:\\.[a-z0-9]{1,10})?\\b)/gi, '')
+  .trim())`;
 
 export async function submitPrompt(
   deps: {
@@ -95,7 +144,17 @@ export async function submitPrompt(
           candidates.push(node);
         }
       }
-      const preferred = candidates.find((node) => isVisible(node)) || candidates[0];
+      const preferred = candidates
+        .slice()
+        .sort((left, right) => {
+          const priority = ${PROMPT_COMPOSER_PRIORITY_SOURCE};
+          const leftPriority = priority(left);
+          const rightPriority = priority(right);
+          return leftPriority - rightPriority;
+        })
+        .find((node) => isVisible(node))
+        || candidates.find((node) => isVisible(node))
+        || candidates[0];
       if (preferred && focusNode(preferred)) {
         return { focused: true };
       }
@@ -148,10 +207,41 @@ export async function submitPrompt(
   const editorTextRaw = verification.result?.value?.editorText ?? "";
   const fallbackValueRaw = verification.result?.value?.fallbackValue ?? "";
   const activeValueRaw = verification.result?.value?.activeValue ?? "";
+  const richSelectorLiteral = JSON.stringify(RICH_PROMPT_SELECTORS);
   const editorTextTrimmed = editorTextRaw?.trim?.() ?? "";
   const fallbackValueTrimmed = fallbackValueRaw?.trim?.() ?? "";
   const activeValueTrimmed = activeValueRaw?.trim?.() ?? "";
-  if (!editorTextTrimmed && !fallbackValueTrimmed && !activeValueTrimmed) {
+  const richVerification = await runtime.evaluate({
+    expression: `(() => {
+      const selectors = ${richSelectorLiteral};
+      const readValue = (node) => {
+        if (!node) return '';
+        if (node instanceof HTMLTextAreaElement) return node.value ?? '';
+        return node.innerText ?? '';
+      };
+      const isVisible = (node) => {
+        if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const rich = selectors
+        .map((selector) => document.querySelector(selector))
+        .filter((node) => Boolean(node));
+      const preferredRich = rich.find((node) => isVisible(node)) || rich[0] || null;
+      return {
+        richValue: preferredRich ? readValue(preferredRich) : '',
+        hasRich: rich.length > 0,
+      };
+    })()`,
+    returnByValue: true,
+  });
+  const richValueRaw = richVerification.result?.value?.richValue ?? "";
+  const hasRichComposer = Boolean(richVerification.result?.value?.hasRich);
+  const richValueTrimmed = richValueRaw?.trim?.() ?? "";
+  if (
+    (hasRichComposer && !richValueTrimmed) ||
+    (!hasRichComposer && !editorTextTrimmed && !fallbackValueTrimmed && !activeValueTrimmed)
+  ) {
     // Learned: occasionally Input.insertText doesn't land in the editor; force textContent/value + input events.
     await runtime.evaluate({
       expression: `(() => {
@@ -166,6 +256,15 @@ export async function submitPrompt(
           editor.textContent = ${encodedPrompt};
           // Nudge ProseMirror to register the textContent write so its state/send-button updates
           editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: ${encodedPrompt}, inputType: 'insertFromPaste' }));
+        }
+        const richSelectors = ${richSelectorLiteral};
+        const richEditors = richSelectors
+          .map((selector) => document.querySelector(selector))
+          .filter((node) => Boolean(node));
+        for (const rich of richEditors) {
+          if (rich === editor || rich === fallback) continue;
+          rich.textContent = ${encodedPrompt};
+          rich.dispatchEvent(new InputEvent('input', { bubbles: true, data: ${encodedPrompt}, inputType: 'insertFromPaste' }));
         }
       })()`,
     });
@@ -202,12 +301,29 @@ export async function submitPrompt(
   const observedEditor = postVerification.result?.value?.editorText ?? "";
   const observedFallback = postVerification.result?.value?.fallbackValue ?? "";
   const observedActive = postVerification.result?.value?.activeValue ?? "";
+  const observedRich = await runtime.evaluate({
+    expression: `(() => {
+      const selectors = ${richSelectorLiteral};
+      const rich = selectors
+        .map((selector) => document.querySelector(selector))
+        .filter((node) => Boolean(node));
+      const preferredRich = rich.find((node) => {
+        const rect = node?.getBoundingClientRect?.();
+        return rect && rect.width > 0 && rect.height > 0;
+      }) || rich[0] || null;
+      return preferredRich ? (preferredRich.innerText ?? '') : '';
+    })()`,
+    returnByValue: true,
+  });
+  const observedRichValue = observedRich.result?.value ?? "";
   const observedLength = Math.max(
     observedEditor.length,
     observedFallback.length,
     observedActive.length,
+    observedRichValue.length,
   );
   const promptVisibleInComposer = composerContainsPrompt(prompt, [
+    observedRichValue,
     observedEditor,
     observedFallback,
     observedActive,
@@ -368,7 +484,8 @@ async function waitForDomReady(
 function buildAttachmentReadyExpression(attachmentNames: string[]): string {
   const namesLiteral = JSON.stringify(attachmentNames.map((name) => name.toLowerCase()));
   return `(() => {
-    const names = ${namesLiteral};
+    const normalizeName = ${ATTACHMENT_NAME_NORMALIZER_SOURCE};
+    const names = ${namesLiteral}.map((name) => normalizeName(name));
     const composer =
       document.querySelector('[data-testid*="composer"]') ||
       document.querySelector('form') ||
@@ -384,7 +501,12 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
-    const match = (node, name) => labelText(node).includes(name);
+    const match = (node, name) => {
+      const label = normalizeName(labelText(node));
+      const baseName = normalizeName(name.split('/').pop()?.split('\\\\').pop() ?? name);
+      const noExt = baseName.replace(/\\.[a-z0-9]{1,10}$/i, '');
+      return label.includes(baseName) || (noExt.length >= 6 && label.includes(noExt));
+    };
 
     // Restrict to attachment affordances; never scan generic div/span nodes (prompt text can contain the file name).
     const attachmentSelectors = [

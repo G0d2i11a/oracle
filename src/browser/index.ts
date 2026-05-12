@@ -149,12 +149,25 @@ function isAttachmentUploadTimeoutError(error: unknown): boolean {
   return /Attachments did not finish uploading before timeout/i.test(message);
 }
 
+function isAttachmentUploadVerificationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /Attachment did not appear in ChatGPT composer/i.test(message) ||
+    /Attachments did not finish uploading before timeout/i.test(message) ||
+    /Attachment was not present on the sent user message/i.test(message)
+  );
+}
+
 export function shouldPreserveBrowserOnErrorForTest(error: unknown, headless: boolean): boolean {
   return shouldPreserveBrowserOnError(error, headless);
 }
 
 export function isAttachmentUploadTimeoutErrorForTest(error: unknown): boolean {
   return isAttachmentUploadTimeoutError(error);
+}
+
+export function isAttachmentUploadVerificationErrorForTest(error: unknown): boolean {
+  return isAttachmentUploadVerificationError(error);
 }
 
 export function classifyPreservedBrowserErrorForTest(
@@ -475,6 +488,18 @@ async function runSubmissionWithRecovery({
       if (fallbackSubmission && isPromptTooLarge && !usedFallbackSubmission) {
         usedFallbackSubmission = true;
         logger("[browser] Inline prompt too large; retrying with file uploads.");
+        await prepareFallbackSubmission();
+        currentPrompt = fallbackSubmission.prompt;
+        currentAttachments = fallbackSubmission.attachments;
+        continue;
+      }
+
+      const isAttachmentVerificationFailure = isAttachmentUploadVerificationError(error);
+      if (fallbackSubmission && isAttachmentVerificationFailure && !usedFallbackSubmission) {
+        usedFallbackSubmission = true;
+        logger(
+          "[browser] Attachment upload verification failed; retrying with bundled file upload.",
+        );
         await prepareFallbackSubmission();
         currentPrompt = fallbackSubmission.prompt;
         currentAttachments = fallbackSubmission.attachments;

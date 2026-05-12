@@ -10,6 +10,23 @@ import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { transferAttachmentViaDataTransfer } from "./attachmentDataTransfer.js";
 
+function normalizeAttachmentNameForComparison(value: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/\s*\(\d+\)(?=(?:\.[a-z0-9]{1,10})?\b)/gi, "")
+    .trim();
+}
+
+function attachmentNameMatchesExpected(value: string, expected: string): boolean {
+  const normalized = normalizeAttachmentNameForComparison(value);
+  const normalizedExpected = normalizeAttachmentNameForComparison(expected);
+  if (!normalized || !normalizedExpected) return false;
+  if (normalized.includes(normalizedExpected)) return true;
+  const expectedNoExt = normalizedExpected.replace(/\.[a-z0-9]{1,10}$/i, "");
+  return expectedNoExt.length >= 6 && normalized.includes(expectedNoExt);
+}
+
 export async function uploadAttachmentFile(
   deps: {
     runtime: ChromeClient["Runtime"];
@@ -33,9 +50,13 @@ export async function uploadAttachmentFile(
     const check = await runtime.evaluate({
       expression: `(() => {
         const expected = ${JSON.stringify(name)};
-        const normalizedExpected = String(expected || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+        const normalize = (value) => String(value || '')
+          .toLowerCase()
+          .replace(/\\s+/g, ' ')
+          .replace(/\\s*\\(\\d+\\)(?=(?:\\.[a-z0-9]{1,10})?\\b)/gi, '')
+          .trim();
+        const normalizedExpected = normalize(expected);
         const expectedNoExt = normalizedExpected.replace(/\\.[a-z0-9]{1,10}$/i, '');
-        const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
         const matchesExpected = (value) => {
           const text = normalize(value);
           if (!text) return false;
@@ -370,20 +391,9 @@ export async function uploadAttachmentFile(
 
   await delay(350);
 
-  const normalizeForMatch = (value: string): string =>
-    String(value || "")
-      .toLowerCase()
-      .replace(/\s+/g, " ")
-      .trim();
   const expectedName = path.basename(attachment.path);
-  const expectedNameLower = normalizeForMatch(expectedName);
-  const expectedNameNoExt = expectedNameLower.replace(/\.[a-z0-9]{1,10}$/i, "");
   const matchesExpectedName = (value: string): boolean => {
-    const normalized = normalizeForMatch(value);
-    if (!normalized) return false;
-    if (normalized.includes(expectedNameLower)) return true;
-    if (expectedNameNoExt.length >= 6 && normalized.includes(expectedNameNoExt)) return true;
-    return false;
+    return attachmentNameMatchesExpected(value, expectedName);
   };
   const isImageAttachment = /\.(png|jpe?g|gif|webp|bmp|svg|heic|heif)$/i.test(expectedName);
   const attachmentUiTimeoutMs = 25_000;
@@ -1334,7 +1344,7 @@ export async function waitForAttachmentCompletion(
   logger?: BrowserLogger,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  const expectedNormalized = expectedNames.map((name) => name.toLowerCase());
+  const expectedNormalized = expectedNames.map(normalizeAttachmentNameForComparison);
   let inputMatchSince: number | null = null;
   let sawInputMatch = false;
   let attachmentMatchSince: number | null = null;
@@ -1588,17 +1598,17 @@ export async function waitForAttachmentCompletion(
         }
       }
       const attachedNames = (value.attachedNames ?? [])
-        .map((name) => name.toLowerCase().replace(/\s+/g, " ").trim())
+        .map(normalizeAttachmentNameForComparison)
         .filter(Boolean);
       const inputNames = (value.inputNames ?? [])
-        .map((name) => name.toLowerCase().replace(/\s+/g, " ").trim())
+        .map(normalizeAttachmentNameForComparison)
         .filter(Boolean);
       const fileCount = typeof value.fileCount === "number" ? value.fileCount : 0;
       const fileCountSatisfied =
         expectedNormalized.length > 0 && fileCount >= expectedNormalized.length;
       const matchesExpected = (expected: string): boolean => {
         const baseName = expected.split("/").pop()?.split("\\").pop() ?? expected;
-        const normalizedExpected = baseName.toLowerCase().replace(/\s+/g, " ").trim();
+        const normalizedExpected = normalizeAttachmentNameForComparison(baseName);
         const expectedNoExt = normalizedExpected.replace(/\.[a-z0-9]{1,10}$/i, "");
         return attachedNames.some((raw) => {
           if (raw.includes(normalizedExpected)) return true;
@@ -1606,8 +1616,8 @@ export async function waitForAttachmentCompletion(
           if (raw.includes("…") || raw.includes("...")) {
             const marker = raw.includes("…") ? "…" : "...";
             const [prefixRaw, suffixRaw] = raw.split(marker);
-            const prefix = prefixRaw.trim();
-            const suffix = suffixRaw.trim();
+            const prefix = normalizeAttachmentNameForComparison(prefixRaw);
+            const suffix = normalizeAttachmentNameForComparison(suffixRaw);
             const target = expectedNoExt.length >= 6 ? expectedNoExt : normalizedExpected;
             const matchesPrefix = !prefix || target.includes(prefix);
             const matchesSuffix = !suffix || target.includes(suffix);
@@ -1644,7 +1654,7 @@ export async function waitForAttachmentCompletion(
       // Some ChatGPT surfaces only render the filename after sending the message.
       const inputMissing = expectedNormalized.filter((expected) => {
         const baseName = expected.split("/").pop()?.split("\\").pop() ?? expected;
-        const normalizedExpected = baseName.toLowerCase().replace(/\s+/g, " ").trim();
+        const normalizedExpected = normalizeAttachmentNameForComparison(baseName);
         const expectedNoExt = normalizedExpected.replace(/\.[a-z0-9]{1,10}$/i, "");
         return !inputNames.some(
           (raw) =>
@@ -1698,7 +1708,7 @@ export async function waitForUserTurnAttachments(
     return true;
   }
 
-  const expectedNormalized = expectedNames.map((name) => name.toLowerCase());
+  const expectedNormalized = expectedNames.map(normalizeAttachmentNameForComparison);
   const minTurnIndex =
     typeof options?.minTurnIndex === "number" && Number.isFinite(options.minTurnIndex)
       ? Math.max(0, Math.floor(options.minTurnIndex))
@@ -1744,7 +1754,9 @@ export async function waitForUserTurnAttachments(
     if (value.hasAttachmentUi) {
       sawAttachmentUi = true;
     }
-    const haystack = [value.text ?? "", ...(value.attrs ?? [])].join("\n");
+    const haystack = normalizeAttachmentNameForComparison(
+      [value.text ?? "", ...(value.attrs ?? [])].join("\n"),
+    );
     const fileCount = typeof value.fileCount === "number" ? value.fileCount : 0;
     const attachmentUiCount =
       typeof value.attachmentUiCount === "number" ? value.attachmentUiCount : 0;
@@ -1755,7 +1767,7 @@ export async function waitForUserTurnAttachments(
       attachmentUiCount >= expectedNormalized.length && expectedNormalized.length > 0;
     const missing = expectedNormalized.filter((expected) => {
       const baseName = expected.split("/").pop()?.split("\\").pop() ?? expected;
-      const normalizedExpected = baseName.toLowerCase().replace(/\s+/g, " ").trim();
+      const normalizedExpected = normalizeAttachmentNameForComparison(baseName);
       const expectedNoExt = normalizedExpected.replace(/\.[a-z0-9]{1,10}$/i, "");
       if (haystack.includes(normalizedExpected)) return false;
       if (expectedNoExt.length >= 6 && haystack.includes(expectedNoExt)) return false;
@@ -1913,10 +1925,15 @@ export async function waitForAttachmentVisible(
   const deadline = Date.now() + timeoutMs;
   const expression = `(() => {
     const expected = ${JSON.stringify(expectedName)};
-    const normalized = expected.toLowerCase();
+    const normalize = (value) => String(value || '')
+      .toLowerCase()
+      .replace(/\\s+/g, ' ')
+      .replace(/\\s*\\(\\d+\\)(?=(?:\\.[a-z0-9]{1,10})?\\b)/gi, '')
+      .trim();
+    const normalized = normalize(expected);
     const normalizedNoExt = normalized.replace(/\\.[a-z0-9]{1,10}$/i, '');
     const matchesExpectedFileName = (value) => {
-      const text = String(value || '').toLowerCase();
+      const text = normalize(value);
       if (!text) return false;
       if (text.includes(normalized)) return true;
       return normalizedNoExt.length >= 6 && text.includes(normalizedNoExt);
@@ -1924,11 +1941,11 @@ export async function waitForAttachmentVisible(
     const matchNode = (node) => {
       if (!node) return false;
       if (node.tagName === 'INPUT' && node.type === 'file') return false;
-      const text = (node.textContent || '').toLowerCase();
-      const aria = node.getAttribute?.('aria-label')?.toLowerCase?.() ?? '';
-      const title = node.getAttribute?.('title')?.toLowerCase?.() ?? '';
-      const testId = node.getAttribute?.('data-testid')?.toLowerCase?.() ?? '';
-      const alt = node.getAttribute?.('alt')?.toLowerCase?.() ?? '';
+      const text = normalize(node.textContent || '');
+      const aria = normalize(node.getAttribute?.('aria-label') ?? '');
+      const title = normalize(node.getAttribute?.('title') ?? '');
+      const testId = normalize(node.getAttribute?.('data-testid') ?? '');
+      const alt = normalize(node.getAttribute?.('alt') ?? '');
       const candidates = [text, aria, title, testId, alt].filter(Boolean);
       return candidates.some((value) => value.includes(normalized) || (normalizedNoExt.length >= 6 && value.includes(normalizedNoExt)));
     };
@@ -2000,22 +2017,8 @@ export async function waitForAttachmentVisible(
       return { found: true, source: 'attachments' };
     }
 
-    const removeButtons = Array.from(
-      (composerRoot ?? document).querySelectorAll('[aria-label*="Remove"],[aria-label*="remove"]'),
-    );
-    const visibleRemove = removeButtons.some((btn) => {
-      if (!(btn instanceof HTMLElement)) return false;
-      const rect = btn.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return false;
-      const style = window.getComputedStyle(btn);
-      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-    });
-    if (visibleRemove) {
-      return { found: true, source: 'remove-button' };
-    }
-
     const cardTexts = Array.from(composerRoot.querySelectorAll('[aria-label*="Remove"]')).map((btn) =>
-      btn?.parentElement?.parentElement?.innerText?.toLowerCase?.() ?? '',
+      normalize(btn?.parentElement?.parentElement?.innerText ?? ''),
     );
     if (cardTexts.some((text) => text.includes(normalized) || (normalizedNoExt.length >= 6 && text.includes(normalizedNoExt)))) {
       return { found: true, source: 'attachment-cards' };
@@ -2099,18 +2102,23 @@ async function waitForAttachmentAnchored(
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   const expression = `(() => {
-    const normalized = ${JSON.stringify(expectedName.toLowerCase())};
+    const normalize = (value) => String(value || '')
+      .toLowerCase()
+      .replace(/\\s+/g, ' ')
+      .replace(/\\s*\\(\\d+\\)(?=(?:\\.[a-z0-9]{1,10})?\\b)/gi, '')
+      .trim();
+    const normalized = normalize(${JSON.stringify(expectedName)});
     const normalizedNoExt = normalized.replace(/\\.[a-z0-9]{1,10}$/i, '');
     const matchesExpected = (value) => {
-      const text = (value ?? '').toLowerCase();
+      const text = normalize(value);
       if (!text) return false;
       if (text.includes(normalized)) return true;
       if (normalizedNoExt.length >= 6 && text.includes(normalizedNoExt)) return true;
       if (text.includes('…') || text.includes('...')) {
         const marker = text.includes('…') ? '…' : '...';
         const [prefixRaw, suffixRaw] = text.split(marker);
-        const prefix = (prefixRaw ?? '').toLowerCase();
-        const suffix = (suffixRaw ?? '').toLowerCase();
+        const prefix = normalize(prefixRaw ?? '');
+        const suffix = normalize(suffixRaw ?? '');
         const target = normalizedNoExt.length >= 6 ? normalizedNoExt : normalized;
         const matchesPrefix = !prefix || target.includes(prefix);
         const matchesSuffix = !suffix || target.includes(suffix);

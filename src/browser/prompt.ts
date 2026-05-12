@@ -69,6 +69,36 @@ interface AssemblePromptDeps {
   tokenizeImpl?: (typeof MODEL_CONFIGS)["gpt-5.1"]["tokenizer"];
 }
 
+async function createBundledTextAttachment(
+  sections: ReturnType<typeof createFileSections>,
+): Promise<{
+  attachment: BrowserAttachment;
+  bundled: { originalCount: number; bundlePath: string };
+  text: string;
+}> {
+  const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-browser-bundle-"));
+  const bundlePath = path.join(bundleDir, "attachments-bundle.txt");
+  const bundleLines: string[] = [];
+  sections.forEach((section) => {
+    bundleLines.push(formatFileSection(section.displayPath, section.content).trimEnd());
+    bundleLines.push("");
+  });
+  const text = `${bundleLines
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd()}\n`;
+  await fs.writeFile(bundlePath, text, "utf8");
+  return {
+    attachment: {
+      path: bundlePath,
+      displayPath: bundlePath,
+      sizeBytes: Buffer.byteLength(text, "utf8"),
+    },
+    bundled: { originalCount: sections.length, bundlePath },
+    text,
+  };
+}
+
 export async function assembleBrowserPrompt(
   runOptions: RunOracleOptions,
   deps: AssemblePromptDeps = {},
@@ -139,26 +169,12 @@ export async function assembleBrowserPrompt(
   let bundleText: string | null = null;
   let bundled: { originalCount: number; bundlePath: string } | null = null;
   if (shouldBundle) {
-    const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-browser-bundle-"));
-    const bundlePath = path.join(bundleDir, "attachments-bundle.txt");
-    const bundleLines: string[] = [];
-    sections.forEach((section) => {
-      bundleLines.push(formatFileSection(section.displayPath, section.content).trimEnd());
-      bundleLines.push("");
-    });
-    bundleText = `${bundleLines
-      .join("\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trimEnd()}\n`;
-    await fs.writeFile(bundlePath, bundleText, "utf8");
+    const bundle = await createBundledTextAttachment(sections);
+    bundleText = bundle.text;
     attachments.length = 0;
-    attachments.push({
-      path: bundlePath,
-      displayPath: bundlePath,
-      sizeBytes: Buffer.byteLength(bundleText, "utf8"),
-    });
+    attachments.push(bundle.attachment);
     attachments.push(...mediaAttachments);
-    bundled = { originalCount: sections.length, bundlePath };
+    bundled = bundle.bundled;
   }
 
   const inlineFileCount = selectedPlan.inlineFileCount;
@@ -200,32 +216,24 @@ export async function assembleBrowserPrompt(
     const fallbackComposerText = baseComposerSections.join("\n\n").trim();
     const fallbackAttachments = [...uploadPlan.attachments, ...mediaAttachments];
     let fallbackBundled: { originalCount: number; bundlePath: string } | null = null;
-    if (uploadPlan.shouldBundle) {
-      const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-browser-bundle-"));
-      const bundlePath = path.join(bundleDir, "attachments-bundle.txt");
-      const bundleLines: string[] = [];
-      sections.forEach((section) => {
-        bundleLines.push(formatFileSection(section.displayPath, section.content).trimEnd());
-        bundleLines.push("");
-      });
-      const fallbackBundleText = `${bundleLines
-        .join("\n")
-        .replace(/\n{3,}/g, "\n\n")
-        .trimEnd()}\n`;
-      await fs.writeFile(bundlePath, fallbackBundleText, "utf8");
+    if (uploadPlan.shouldBundle || sections.length > 1) {
+      const bundle = await createBundledTextAttachment(sections);
       fallbackAttachments.length = 0;
-      fallbackAttachments.push({
-        path: bundlePath,
-        displayPath: bundlePath,
-        sizeBytes: Buffer.byteLength(fallbackBundleText, "utf8"),
-      });
+      fallbackAttachments.push(bundle.attachment);
       fallbackAttachments.push(...mediaAttachments);
-      fallbackBundled = { originalCount: sections.length, bundlePath };
+      fallbackBundled = bundle.bundled;
     }
     fallback = {
       composerText: fallbackComposerText,
       attachments: fallbackAttachments,
       bundled: fallbackBundled,
+    };
+  } else if (!shouldBundle && selectedPlan.mode === "upload" && sections.length > 1) {
+    const bundle = await createBundledTextAttachment(sections);
+    fallback = {
+      composerText,
+      attachments: [bundle.attachment, ...mediaAttachments],
+      bundled: bundle.bundled,
     };
   }
 

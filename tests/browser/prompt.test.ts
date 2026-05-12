@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { assembleBrowserPrompt } from "../../src/browser/prompt.js";
@@ -90,6 +91,33 @@ describe("assembleBrowserPrompt", () => {
     );
   });
 
+  test("auto inline mode bundles multi-file upload fallback", async () => {
+    const options = buildOptions({
+      prompt: "Explain the bug",
+      file: ["a.txt", "b.txt"],
+      browserAttachments: "auto",
+    });
+    const result = await assembleBrowserPrompt(options, {
+      cwd: "/repo",
+      readFilesImpl: async (paths) =>
+        paths.map((entry) => ({
+          path: path.resolve("/repo", entry),
+          content: `tiny ${entry}`,
+        })),
+    });
+
+    expect(result.attachmentMode).toBe("inline");
+    expect(result.fallback?.attachments).toEqual([
+      expect.objectContaining({ displayPath: expect.stringMatching(/attachments-bundle\.txt$/) }),
+    ]);
+    expect(result.fallback?.bundled).toEqual(
+      expect.objectContaining({
+        originalCount: 2,
+        bundlePath: result.fallback?.attachments[0]?.path,
+      }),
+    );
+  });
+
   test("always mode forces uploads even when small", async () => {
     const options = buildOptions({
       prompt: "Explain the bug",
@@ -107,6 +135,43 @@ describe("assembleBrowserPrompt", () => {
     expect(result.composerText).toBe("Explain the bug");
     expect(result.composerText).not.toContain("### File: a.txt");
     expect(result.fallback).toBeNull();
+  });
+
+  test("always mode creates bundled fallback for multiple text uploads", async () => {
+    const options = buildOptions({
+      prompt: "Explain the bug",
+      file: ["a.txt", "b.txt"],
+      browserAttachments: "always",
+    });
+    const result = await assembleBrowserPrompt(options, {
+      cwd: "/repo",
+      readFilesImpl: async (paths) =>
+        paths.map((entry) => ({
+          path: path.resolve("/repo", entry),
+          content: `content for ${entry}`,
+        })),
+    });
+
+    expect(result.attachmentMode).toBe("upload");
+    expect(result.attachments).toEqual([
+      expect.objectContaining({ path: "/repo/a.txt", displayPath: "a.txt" }),
+      expect.objectContaining({ path: "/repo/b.txt", displayPath: "b.txt" }),
+    ]);
+    expect(result.fallback).toEqual(
+      expect.objectContaining({
+        composerText: "Explain the bug",
+        attachments: [
+          expect.objectContaining({
+            displayPath: expect.stringMatching(/attachments-bundle\.txt$/),
+          }),
+        ],
+        bundled: expect.objectContaining({ originalCount: 2 }),
+      }),
+    );
+    const bundlePath = result.fallback?.attachments[0]?.path;
+    expect(result.fallback?.bundled?.bundlePath).toBe(bundlePath);
+    await expect(fs.readFile(bundlePath ?? "", "utf8")).resolves.toContain("content for a.txt");
+    await expect(fs.readFile(bundlePath ?? "", "utf8")).resolves.toContain("content for b.txt");
   });
 
   test("legacy browserInlineFiles forces inline and disables auto fallback", async () => {
