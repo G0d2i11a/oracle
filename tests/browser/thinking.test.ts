@@ -485,4 +485,33 @@ describe("thinking status browser expression", () => {
     expect(clicked).toBe(false);
     expect(result).toBeNull();
   });
+
+  test("treats finalizing answer as active response progress", async () => {
+    const document = new FakeDocument();
+    document.append(
+      new FakeElement("article", "Finalizing answer", {
+        "data-testid": "conversation-turn-1",
+        "data-message-author-role": "assistant",
+      }),
+    );
+
+    const result = await runThinkingStatusExpression(document);
+
+    expect(result).toMatchObject({
+      message: "finalizing answer",
+      source: "inline",
+    });
+  });
+
+  test("treats visible stop button as active response progress", async () => {
+    const document = new FakeDocument();
+    document.append(new FakeElement("button", "", { "aria-label": "Stop answering" }));
+
+    const result = await runThinkingStatusExpression(document);
+
+    expect(result).toMatchObject({
+      message: "active",
+      source: "inline",
+    });
+  });
 });

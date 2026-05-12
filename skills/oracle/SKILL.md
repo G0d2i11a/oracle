@@ -1,28 +1,33 @@
 ---
 name: oracle
-description: Use the @steipete/oracle CLI to bundle a prompt plus the right files and get a second-model review (API or browser) for debugging, refactors, design checks, or cross-validation.
+description: Use Shawn's local workshop Oracle CLI/MCP under /Users/shawn/Workspace/oracle, primarily in ChatGPT browser mode with full-detail attachments, for debugging, refactors, design checks, PRDs, and cross-validation.
 ---
 
-# Oracle (CLI) — best use
+# Oracle (CLI) - best use
 
 Oracle bundles your prompt + selected files into one “one-shot” request so another model can answer with real repo context (API or browser automation). Treat outputs as advisory: verify against the codebase + tests.
 
-## Main use case (browser, GPT‑5.4 Pro)
+## Main use case (browser, GPT-5.5 Extended Pro)
 
-Default workflow here: `--engine browser` with GPT‑5.4 Pro in ChatGPT. This is the “human in the loop” path: it can take ~10 minutes to ~1 hour; expect a stored session you can reattach to.
+Default workflow here: `--engine browser` with ChatGPT's GPT-5.5 Extended Pro label. This is the “human in the loop” path: it can take ~10 minutes to multiple hours; long-running/finalizing/thinking is normal.
 
 Recommended defaults:
 
 - Engine: browser (`--engine browser`)
-- Model: GPT‑5.4 Pro (either `--model gpt-5.4-pro` or a ChatGPT picker label like `--model "5.4 Pro"`)
-- Attachments: directories/globs + excludes; avoid secrets.
+- Model: ChatGPT picker label `--model "5.5 Extended Pro"` or the exact current web label reported by Oracle.
+- Model selection: use `--browser-model-strategy select`; verify the live browser label, not metadata alone.
+- Attachments: prefer `--browser-attachments always`; bundling text files is allowed only when it preserves the complete content.
 
-## Golden path (fast + reliable)
+## Full-detail rule
 
-1. Pick a tight file set (fewest files that still contain the truth).
-2. Preview what you’re about to send (`--dry-run` + `--files-report` when needed).
-3. Run in browser mode for the usual GPT‑5.4 Pro ChatGPT workflow; use API only when you explicitly want it.
-4. If the run detaches/timeouts: reattach to the stored session (don’t re-run).
+Full-detail is the default in Shawn's workflow.
+
+- Do not switch to a lite, small, summary, reduced-reference, reduced-attachment, or downgraded-model run to work around automation problems.
+- If upload, model selection, Cloudflare, composer, or status detection fails, fix or retry the browser automation while preserving the same full prompt and references.
+- If ChatGPT shows Stop, Finalizing answer, thinking, reasoning, or a thinking sidecar, the run is still active. Keep waiting; do not stop the run and do not start a smaller replacement run.
+- If the CLI detaches or loses capture while the browser remains open, reattach to the stored session rather than sending a duplicate.
+
+## Golden path
 
 ## Commands (preferred)
 
@@ -37,7 +42,7 @@ Recommended defaults:
   - `npx -y @steipete/oracle --dry-run summary --files-report -p "<task>" --file "src/**"`
 
 - Browser run (main path; long-running is normal):
-  - `npx -y @steipete/oracle --engine browser --model gpt-5.4-pro -p "<task>" --file "src/**"`
+  - `node /Users/shawn/Workspace/oracle/dist/bin/oracle-cli.js --engine browser --browser-attachments always --browser-model-strategy select --model "5.5 Extended Pro" -p "<task>" --file "src/**"`
 
 - Manual paste fallback (assemble bundle, copy to clipboard):
   - `npx -y @steipete/oracle --render --copy -p "<task>" --file "src/**"`
@@ -75,6 +80,7 @@ Recommended defaults:
 - **API runs require explicit user consent** before starting because they incur usage costs.
 - Browser attachments:
   - `--browser-attachments auto|never|always` (auto pastes inline up to ~60k chars then uploads).
+  - In Shawn's full-detail workflow, use `always` unless explicitly told otherwise.
 - Remote browser host (signed-in machine runs automation):
   - Host: `oracle serve --host 0.0.0.0 --port 9473 --token <secret>`
   - Client: `oracle --engine browser --remote-host <host:port> --remote-token <secret> -p "<task>" --file "src/**"`
@@ -83,7 +89,7 @@ Recommended defaults:
 
 - Stored under `~/.oracle/sessions` (override with `ORACLE_HOME_DIR`).
 - Browser runs save durable files under `~/.oracle/sessions/<id>/artifacts/`, including `transcript.md`, Deep Research reports, and downloaded ChatGPT-generated images when available.
-- Runs may detach or take a long time (browser + GPT‑5.4 Pro often does). If the CLI times out: don’t re-run; reattach.
+- Runs may detach or take a long time (browser + GPT-5.5 Extended Pro often does). If the CLI times out: don’t re-run; reattach.
   - List: `oracle status --hours 72`
   - Attach: `oracle session <id> --render`
 - Use `--slug "<3-5 words>"` to keep session IDs readable.

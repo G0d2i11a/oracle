@@ -14,8 +14,10 @@ import {
   buildConversationDebugExpression,
 } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
+import { readThinkingStatus } from "./thinkingStatus.js";
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
+const ASSISTANT_ACTIVE_TIMEOUT_EXTENSION_MS = 60_000;
 
 function isAnswerNowPlaceholderText(normalized: string): boolean {
   const text = normalized.trim();
@@ -48,6 +50,18 @@ function isAssistantUiActionText(normalized: string): boolean {
 function isLikelyTruncatedAssistantText(normalized: string): boolean {
   const text = normalized.trim();
   return text === "a" || text === "an" || text === "the";
+}
+
+function isAssistantProgressOnlyText(normalized: string): boolean {
+  const text = normalized.replace(/\s+/g, " ").trim();
+  return (
+    text === "finalizing answer" ||
+    text === "finalising answer" ||
+    text === "thinking" ||
+    text === "pro thinking" ||
+    text === "reasoning" ||
+    text === "working"
+  );
 }
 
 export async function waitForAssistantResponse(
@@ -318,6 +332,7 @@ async function recoverAssistantResponse(
     },
     recoveryTimeoutMs,
     400,
+    () => isAssistantProgressActive(Runtime),
   );
   if (recovered) {
     logger("Recovered assistant response via polling fallback");
@@ -357,7 +372,11 @@ async function parseAssistantEvaluationResult(
         : undefined;
     const text = cleanAssistantText(String((result.value as { text: unknown }).text ?? ""));
     const normalized = text.toLowerCase();
-    if (isAnswerNowPlaceholderText(normalized) || isAssistantUiActionText(normalized)) {
+    if (
+      isAnswerNowPlaceholderText(normalized) ||
+      isAssistantUiActionText(normalized) ||
+      isAssistantProgressOnlyText(normalized)
+    ) {
       return null;
     }
     if (isLikelyTruncatedAssistantText(normalized)) {
@@ -373,6 +392,7 @@ async function parseAssistantEvaluationResult(
   if (
     isAnswerNowPlaceholderText(fallbackText.toLowerCase()) ||
     isAssistantUiActionText(fallbackText.toLowerCase()) ||
+    isAssistantProgressOnlyText(fallbackText.toLowerCase()) ||
     isLikelyTruncatedAssistantText(fallbackText.toLowerCase())
   ) {
     return null;
@@ -465,14 +485,21 @@ async function pollAssistantCompletion(
   html?: string;
   meta: { turnId?: string | null; messageId?: string | null };
 } | null> {
-  const watchdogDeadline = Date.now() + timeoutMs;
+  let watchdogDeadline = Date.now() + timeoutMs;
   let previousLength = 0;
   let stableCycles = 0;
   let lastChangeAt = Date.now();
-  while (Date.now() < watchdogDeadline) {
+  for (;;) {
     // Check abort signal to stop polling when another path won the race
     if (abortSignal?.aborted) {
       return null;
+    }
+    if (Date.now() >= watchdogDeadline) {
+      const stillActive = await isAssistantProgressActive(Runtime);
+      if (!stillActive) {
+        return null;
+      }
+      watchdogDeadline = Date.now() + ASSISTANT_ACTIVE_TIMEOUT_EXTENSION_MS;
     }
     const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId);
     const normalized = normalizeAssistantSnapshot(snapshot);
@@ -515,18 +542,33 @@ async function pollAssistantCompletion(
       previousLength = 0;
       stableCycles = 0;
     }
-    await delay(400);
+    await delay(Math.max(50, Math.min(400, watchdogDeadline - Date.now())));
   }
-  return null;
 }
 
 async function isStopButtonVisible(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
   try {
     const { result } = await Runtime.evaluate({
-      expression: `Boolean(document.querySelector('${STOP_BUTTON_SELECTOR}'))`,
+      expression: `(() => {
+        const selectors = [
+          '${STOP_BUTTON_SELECTOR}',
+          'button[aria-label*="Stop"]',
+          'button[aria-label*="stop"]',
+          '[role="button"][aria-label*="Stop"]',
+          '[role="button"][aria-label*="stop"]',
+        ];
+        const isVisible = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const rect = node.getBoundingClientRect();
+          if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+          const style = window.getComputedStyle(node);
+          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+        };
+        return Array.from(document.querySelectorAll(selectors.join(','))).some(isVisible);
+      })()`,
       returnByValue: true,
     });
-    return Boolean(result?.value);
+    return result?.value === true;
   } catch {
     return false;
   }
@@ -571,7 +613,19 @@ async function isCompletionVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
       })()`,
       returnByValue: true,
     });
-    return Boolean(result?.value);
+    return result?.value === true;
+  } catch {
+    return false;
+  }
+}
+
+async function isAssistantProgressActive(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
+  try {
+    const [stopVisible, thinkingStatus] = await Promise.all([
+      isStopButtonVisible(Runtime),
+      readThinkingStatus(Runtime).catch(() => null),
+    ]);
+    return stopVisible || Boolean(thinkingStatus);
   } catch {
     return false;
   }
@@ -593,6 +647,9 @@ function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
     return null;
   }
   if (isAssistantUiActionText(normalized)) {
+    return null;
+  }
+  if (isAssistantProgressOnlyText(normalized)) {
     return null;
   }
   if (isLikelyTruncatedAssistantText(normalized)) {
@@ -617,16 +674,25 @@ async function waitForCondition<T>(
   getter: () => Promise<T | null>,
   timeoutMs: number,
   pollIntervalMs = 400,
+  shouldContinueAfterTimeout?: () => Promise<boolean>,
 ): Promise<T | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  let deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (Date.now() >= deadline) {
+      const shouldContinue = shouldContinueAfterTimeout
+        ? await shouldContinueAfterTimeout().catch(() => false)
+        : false;
+      if (!shouldContinue) {
+        return null;
+      }
+      deadline = Date.now() + ASSISTANT_ACTIVE_TIMEOUT_EXTENSION_MS;
+    }
     const value = await getter();
     if (value) {
       return value;
     }
-    await delay(pollIntervalMs);
+    await delay(Math.max(50, Math.min(pollIntervalMs, deadline - Date.now())));
   }
-  return null;
 }
 
 function buildAssistantSnapshotExpression(
@@ -656,12 +722,15 @@ function buildAssistantSnapshotExpression(
     // Learned: the default turn DOM misses project view; keep a fallback extractor.
     ${buildAssistantExtractor("extractAssistantTurn")}
     const extracted = extractAssistantTurn();
-    const isPlaceholder = (snapshot) => {
-      const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
-      if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
-      if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
-        return true;
-      }
+	    const isPlaceholder = (snapshot) => {
+          const normalized = String(snapshot?.text ?? '').toLowerCase().replace(/\\s+/g, ' ').trim();
+	      if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
+	      if (['finalizing answer', 'finalising answer', 'thinking', 'pro thinking', 'reasoning', 'working'].includes(normalized)) {
+	        return true;
+	      }
+	      if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
+	        return true;
+	      }
       return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
     };
     if (extracted && extracted.text && !isPlaceholder(extracted)) {
@@ -708,14 +777,18 @@ function buildResponseObserverExpression(
       const currentId = currentConversationId();
       return !currentId || currentId === EXPECTED_CONVERSATION_ID;
     };
-    const isAnswerNowPlaceholder = (snapshot) => {
-      const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
-      if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
-      if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
-        return true;
-      }
-      return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
-    };
+	    const isAnswerNowPlaceholder = (snapshot) => {
+          const normalized = String(snapshot?.text ?? '').toLowerCase().replace(/\\s+/g, ' ').trim();
+	      if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
+	      if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
+	        return true;
+	      }
+	      return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
+	    };
+	    const isProgressOnlyText = (value) => {
+          const normalized = String(value ?? '').toLowerCase().replace(/\\s+/g, ' ').trim();
+	      return ['finalizing answer', 'finalising answer', 'thinking', 'pro thinking', 'reasoning', 'working'].includes(normalized);
+	    };
 
     // Helper to detect assistant turns - must match buildAssistantExtractor logic for consistency.
     const isAssistantTurn = (node) => {
@@ -734,11 +807,12 @@ function buildResponseObserverExpression(
     // Learned: some layouts (project view) render markdown without assistant turn wrappers.
     const extractFromMarkdownFallback = ${buildMarkdownFallbackExtractor("MIN_TURN_INDEX")};
 
-    const acceptSnapshot = (snapshot) => {
-      if (!snapshot) return null;
-      if (!matchesExpectedConversation()) return null;
-      const index = typeof snapshot.turnIndex === 'number' ? snapshot.turnIndex : -1;
-      if (MIN_TURN_INDEX >= 0) {
+	    const acceptSnapshot = (snapshot) => {
+	      if (!snapshot) return null;
+	      if (!matchesExpectedConversation()) return null;
+	      if (isProgressOnlyText(snapshot.text)) return null;
+	      const index = typeof snapshot.turnIndex === 'number' ? snapshot.turnIndex : -1;
+	      if (MIN_TURN_INDEX >= 0) {
         if (index < 0 || index < MIN_TURN_INDEX) {
           return null;
         }
@@ -746,25 +820,20 @@ function buildResponseObserverExpression(
       return snapshot;
     };
 
-    const captureViaObserver = () =>
-      new Promise((resolve, reject) => {
-        const deadline = Date.now() + ${timeoutMs};
-        let stopInterval = null;
-        let timeoutId = null;
-        let cleanedUp = false;
-        let observer = null;
+	    const captureViaObserver = () =>
+	      new Promise((resolve, reject) => {
+	        let deadline = Date.now() + ${timeoutMs};
+	        let timeoutId = null;
+	        let cleanedUp = false;
+	        let observer = null;
 
         // Centralized cleanup to prevent resource leaks
-        const cleanup = () => {
-          if (cleanedUp) return;
-          cleanedUp = true;
-          if (stopInterval) {
-            clearInterval(stopInterval);
-            stopInterval = null;
-          }
-          if (timeoutId) {
-            clearTimeout(timeoutId);
-            timeoutId = null;
+	        const cleanup = () => {
+	          if (cleanedUp) return;
+	          cleanedUp = true;
+	          if (timeoutId) {
+	            clearTimeout(timeoutId);
+	            timeoutId = null;
           }
           if (observer) {
             try {
@@ -772,11 +841,89 @@ function buildResponseObserverExpression(
             } catch {
               // ignore disconnect errors
             }
-            observer = null;
-          }
-        };
+	            observer = null;
+	          }
+	        };
+	        const isVisible = (node) => {
+	          if (!(node instanceof HTMLElement)) return false;
+	          const rect = node.getBoundingClientRect();
+	          if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+	          const style = window.getComputedStyle(node);
+	          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+	        };
+	        const hasVisibleStopButton = () =>
+	          Array.from(
+	            document.querySelectorAll(
+	              [
+	                STOP_SELECTOR,
+	                'button[aria-label*="Stop"]',
+	                'button[aria-label*="stop"]',
+	                '[role="button"][aria-label*="Stop"]',
+	                '[role="button"][aria-label*="stop"]',
+	              ].join(','),
+	            ),
+	          ).some(isVisible);
+	        const latestAssistantText = () => {
+	          const fromTurns = extractFromTurns();
+	          if (fromTurns?.text) return fromTurns.text;
+	          const fallback = extractFromMarkdownFallback();
+	          return fallback?.text ?? '';
+	        };
+	        const hasThinkingIndicator = () => {
+	          const nodes = Array.from(
+	            document.querySelectorAll(
+	              [
+	                '[data-testid*="thinking"]',
+	                '[data-testid*="reasoning"]',
+	                '[role="status"]',
+	                '[aria-live="polite"]',
+	                'span.loading-shimmer',
+	              ].join(','),
+	            ),
+	          );
+	          return nodes.some((node) => {
+	            if (!isVisible(node)) return false;
+	            const label = String([
+	              node.textContent,
+	              node.getAttribute?.('aria-label'),
+	              node.getAttribute?.('title'),
+	              node.getAttribute?.('data-testid'),
+	            ].filter(Boolean).join(' ')).toLowerCase();
+	            return (
+	              label.includes('thinking') ||
+	              label.includes('reasoning') ||
+	              label.includes('pro thinking') ||
+	              label.includes('finalizing answer') ||
+	              label.includes('finalising answer')
+	            );
+	          });
+	        };
+	        const hasActiveProgress = () =>
+	          hasVisibleStopButton() || isProgressOnlyText(latestAssistantText()) || hasThinkingIndicator();
+	        const scheduleTimeout = () => {
+	          if (timeoutId) {
+	            clearTimeout(timeoutId);
+	          }
+	          timeoutId = setTimeout(() => {
+	            timeoutId = null;
+	            if (cleanedUp) return;
+	            if (hasActiveProgress()) {
+	              deadline = Date.now() + ${ASSISTANT_ACTIVE_TIMEOUT_EXTENSION_MS};
+	              scheduleTimeout();
+	              return;
+	            }
+	            cleanup();
+	            reject(new Error('Response timeout'));
+	          }, Math.max(1000, deadline - Date.now()));
+	        };
+	        const extendDeadlineIfActive = () => {
+	          if (!hasActiveProgress()) return false;
+	          deadline = Date.now() + ${ASSISTANT_ACTIVE_TIMEOUT_EXTENSION_MS};
+	          scheduleTimeout();
+	          return true;
+	        };
 
-        const observerCallback = () => {
+	        const observerCallback = () => {
           if (cleanedUp) return;
           try {
             const extractedRaw = extractFromTurns();
@@ -790,40 +937,24 @@ function buildResponseObserverExpression(
               extracted = acceptSnapshot(fallbackCandidate);
             }
             if (extracted) {
-              cleanup();
-              resolve(extracted);
-            } else if (Date.now() > deadline) {
-              cleanup();
-              reject(new Error('Response timeout'));
-            }
+	              cleanup();
+	              resolve(extracted);
+	            } else if (Date.now() > deadline) {
+	              if (!extendDeadlineIfActive()) {
+	                cleanup();
+	                reject(new Error('Response timeout'));
+	              }
+	            }
           } catch (error) {
             cleanup();
             reject(error);
           }
         };
 
-        observer = new MutationObserver(observerCallback);
-        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-
-        stopInterval = setInterval(() => {
-          if (cleanedUp) return;
-          const stop = document.querySelector(STOP_SELECTOR);
-          if (!stop) {
-            return;
-          }
-          const isStopButton =
-            stop.getAttribute('data-testid') === 'stop-button' || stop.getAttribute('aria-label')?.toLowerCase()?.includes('stop');
-          if (isStopButton) {
-            return;
-          }
-          dispatchClickSequence(stop);
-        }, 500);
-
-        timeoutId = setTimeout(() => {
-          cleanup();
-          reject(new Error('Response timeout'));
-        }, ${timeoutMs});
-      });
+	        observer = new MutationObserver(observerCallback);
+	        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+	        scheduleTimeout();
+	      });
 
     // Check if the last assistant turn has finished (scoped to avoid detecting old turns).
     const isLastAssistantTurnFinished = () => {
@@ -856,12 +987,18 @@ function buildResponseObserverExpression(
       const longAnswer = initialLength >= 40 && initialLength < 500;
       const settleWindowMs = shortAnswer ? 12_000 : mediumAnswer ? 5_000 : longAnswer ? 8_000 : 10_000;
       const settleIntervalMs = 400;
-      const deadline = Date.now() + settleWindowMs;
+      let deadline = Date.now() + settleWindowMs;
       let latest = snapshot;
       let lastLength = snapshot?.text?.length ?? 0;
       let stableCycles = 0;
       const stableTarget = shortAnswer ? 6 : mediumAnswer ? 3 : longAnswer ? 5 : 6;
-      while (Date.now() < deadline) {
+      for (;;) {
+        if (Date.now() >= deadline) {
+          if (!hasActiveProgress()) {
+            break;
+          }
+          deadline = Date.now() + ${ASSISTANT_ACTIVE_TIMEOUT_EXTENSION_MS};
+        }
         await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
         const refreshedRaw = extractFromTurns();
         const refreshedCandidate =
@@ -883,10 +1020,10 @@ function buildResponseObserverExpression(
         } else {
           stableCycles += 1;
         }
-        const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
+        const activeProgress = hasActiveProgress();
         const finishedVisible = isLastAssistantTurnFinished();
 
-        if (finishedVisible || (!stopVisible && stableCycles >= stableTarget)) {
+        if (finishedVisible || (!activeProgress && stableCycles >= stableTarget)) {
           break;
         }
       }

@@ -107,6 +107,32 @@ describe("attachment completion fallbacks", () => {
     useRealTime();
   });
 
+  test("waitForAttachmentCompletion resolves when expected files are split across chip and input signals", async () => {
+    useFakeTime();
+
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            state: "ready",
+            uploading: false,
+            filesAttached: true,
+            attachedNames: ["attachments-bundle(108).txt"],
+            inputNames: ["arxiv-2604.01687.pdf"],
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    const promise = waitForAttachmentCompletion(runtime, 10_000, [
+      "attachments-bundle.txt",
+      "arxiv-2604.01687.pdf",
+    ]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(promise).resolves.toBeUndefined();
+    useRealTime();
+  });
+
   test("waitForAttachmentCompletion does not confuse short basenames with longer filenames", async () => {
     useFakeTime();
 

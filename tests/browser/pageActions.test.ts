@@ -532,6 +532,113 @@ describe("waitForAssistantResponse", () => {
     const result = await waitForAssistantResponse(runtime, 200, logger);
     expect(result.text).toBe("Recovered full answer");
   });
+
+  test("keeps waiting past timeout while ChatGPT is visibly still generating", async () => {
+    vi.useFakeTimers();
+    try {
+      let stopVisible = true;
+      let snapshot: { text: string; html: string; messageId: string; turnId: string } | null = null;
+      let settled = false;
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          const expression = String(params?.expression ?? "");
+          if (params?.awaitPromise && expression.includes("MutationObserver")) {
+            return new Promise(() => undefined);
+          }
+          if (expression.includes("document.querySelectorAll(selectors.join(','))")) {
+            return { result: { value: stopVisible } };
+          }
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: snapshot } };
+          }
+          if (expression.includes("lastAssistantTurn.querySelector")) {
+            return { result: { value: false } };
+          }
+          return { result: { value: null } };
+        });
+      const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+
+      const promise = waitForAssistantResponse(runtime, 100, logger).then((result) => {
+        settled = true;
+        return result;
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(settled).toBe(false);
+
+      snapshot = {
+        text: "Generated image.",
+        html: '<img src="/backend-api/estuary/content?id=file_123">',
+        messageId: "mid",
+        turnId: "tid",
+      };
+      stopVisible = false;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      const result = await promise;
+      expect(result.text).toBe("Generated image.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("ignores Finalizing answer placeholder and waits for real text", async () => {
+    vi.useFakeTimers();
+    try {
+      let stopVisible = true;
+      let snapshot = {
+        text: "Finalizing answer",
+        html: "<p>Finalizing answer</p>",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          const expression = String(params?.expression ?? "");
+          if (params?.awaitPromise) {
+            return {
+              result: {
+                type: "object",
+                value: {
+                  text: "Finalizing answer",
+                  html: "<p>Finalizing answer</p>",
+                  messageId: "mid",
+                  turnId: "tid",
+                },
+              },
+            };
+          }
+          if (expression.includes("document.querySelectorAll(selectors.join(','))")) {
+            return { result: { value: stopVisible } };
+          }
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: snapshot } };
+          }
+          if (expression.includes("lastAssistantTurn.querySelector")) {
+            return { result: { value: false } };
+          }
+          return { result: { value: null } };
+        });
+      const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+
+      const promise = waitForAssistantResponse(runtime, 100, logger);
+      await vi.advanceTimersByTimeAsync(500);
+      snapshot = {
+        text: "Actual complete response",
+        html: "<p>Actual complete response</p>",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      stopVisible = false;
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      const result = await promise;
+      expect(result.text).toBe("Actual complete response");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("uploadAttachmentFile", () => {

@@ -21,13 +21,6 @@ const ENTER_KEY_EVENT = {
 } as const;
 const ENTER_KEY_TEXT = "\r";
 
-type PromptComposerCandidateLike = {
-  tagName?: string;
-  isContentEditable?: boolean;
-  getAttribute?: (name: string) => string | null | undefined;
-  classList?: { contains(token: string): boolean };
-};
-
 const RICH_PROMPT_SELECTORS = [
   ".ProseMirror",
   '[contenteditable="true"][role="textbox"]',
@@ -47,28 +40,11 @@ const PROMPT_COMPOSER_PRIORITY_SOURCE = `((node) => {
   return 1;
 })`;
 
-function promptComposerPriority(node: PromptComposerCandidateLike): number {
-  const tag = String(node.tagName ?? "").toUpperCase();
-  const isRich =
-    node.isContentEditable === true ||
-    node.getAttribute?.("contenteditable") === "true" ||
-    node.getAttribute?.("data-virtualkeyboard") === "true" ||
-    node.classList?.contains("ProseMirror") === true ||
-    tag === "DIV";
-  if (isRich) {
-    return 0;
-  }
-  if (tag === "TEXTAREA") {
-    return 2;
-  }
-  return 1;
-}
-
 function normalizePromptForComparison(value: string): string {
   let text = value?.toLowerCase?.() ?? "";
-  text = text.replace(/\`\`\`[^\n]*\n([\s\S]*?)\`\`\`/g, " $1 ");
-  text = text.replace(/\`\`\`/g, " ");
-  text = text.replace(/\`([^\`]*)\`/g, "$1");
+  text = text.replace(/```[^\n]*\n([\s\S]*?)```/g, " $1 ");
+  text = text.replace(/```/g, " ");
+  text = text.replace(/`([^`]*)`/g, "$1");
   return text.replace(/\s+/g, " ").trim();
 }
 
@@ -501,12 +477,13 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
-    const match = (node, name) => {
-      const label = normalizeName(labelText(node));
+    const matchesLabel = (rawLabel, name) => {
+      const label = normalizeName(rawLabel);
       const baseName = normalizeName(name.split('/').pop()?.split('\\\\').pop() ?? name);
       const noExt = baseName.replace(/\\.[a-z0-9]{1,10}$/i, '');
       return label.includes(baseName) || (noExt.length >= 6 && label.includes(noExt));
     };
+    const match = (node, name) => matchesLabel(labelText(node), name);
 
     // Restrict to attachment affordances; never scan generic div/span nodes (prompt text can contain the file name).
     const attachmentSelectors = [
@@ -521,22 +498,18 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
     ];
     const attachmentRoots = Array.from(new Set([composer, document])).filter(Boolean);
 
-    const chipsReady = names.every((name) =>
-      attachmentRoots.some((root) =>
-        Array.from(root.querySelectorAll(attachmentSelectors.join(','))).some((node) => match(node, name)),
+    const chipNames = attachmentRoots.flatMap((root) =>
+      Array.from(root.querySelectorAll(attachmentSelectors.join(','))).map((node) => labelText(node)),
+    );
+    const inputNames = attachmentRoots.flatMap((root) =>
+      Array.from(root.querySelectorAll('input[type="file"]')).flatMap((el) =>
+        Array.from((el instanceof HTMLInputElement ? el.files : []) || [])
+          .map((file) => file?.name ?? '')
+          .filter(Boolean),
       ),
     );
-    const inputsReady = names.every((name) =>
-      attachmentRoots.some((root) =>
-        Array.from(root.querySelectorAll('input[type="file"]')).some((el) =>
-          Array.from((el instanceof HTMLInputElement ? el.files : []) || []).some((file) =>
-            file?.name?.toLowerCase?.().includes(name),
-          ),
-        ),
-      ),
-    );
-
-    return chipsReady || inputsReady;
+    const observedNames = [...chipNames, ...inputNames];
+    return names.every((name) => observedNames.some((raw) => matchesLabel(raw, name)));
   })()`;
 }
 

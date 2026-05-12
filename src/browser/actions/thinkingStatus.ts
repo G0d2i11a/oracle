@@ -1,6 +1,10 @@
 import type { BrowserLogger, ChromeClient } from "../types.js";
 import { formatElapsed } from "../../oracle/format.js";
-import { ASSISTANT_ROLE_SELECTOR, CONVERSATION_TURN_SELECTOR } from "../constants.js";
+import {
+  ASSISTANT_ROLE_SELECTOR,
+  CONVERSATION_TURN_SELECTOR,
+  STOP_BUTTON_SELECTOR,
+} from "../constants.js";
 
 const THINKING_STALE_HINT_MS = 10 * 60_000;
 
@@ -125,7 +129,7 @@ function buildThinkingStatusFingerprint(snapshot: ThinkingStatusSnapshot): strin
   ].join(":");
 }
 
-async function readThinkingStatus(
+export async function readThinkingStatus(
   Runtime: ChromeClient["Runtime"],
 ): Promise<ThinkingStatusSnapshot | null> {
   const expression = buildThinkingStatusExpression();
@@ -162,6 +166,7 @@ async function readThinkingStatus(
 
 const SAFE_THINKING_STATUS_MESSAGES = new Set([
   "active",
+  "finalizing answer",
   "thinking sidecar active",
   "thinking sidecar opened",
 ]);
@@ -185,6 +190,7 @@ export function sanitizeThinkingText(raw: string): string {
 function buildThinkingStatusExpression(): string {
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
+  const stopSelectorLiteral = JSON.stringify(STOP_BUTTON_SELECTOR);
   const selectors = [
     "span.loading-shimmer",
     "span.flex.items-center.gap-1.truncate.text-start.align-middle.text-token-text-tertiary",
@@ -199,6 +205,7 @@ function buildThinkingStatusExpression(): string {
   return `(async () => {
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
+    const STOP_SELECTOR = ${stopSelectorLiteral};
     const selectors = ${selectorLiteral};
     const keywords = ${keywordsLiteral};
     const normalize = (value) =>
@@ -260,6 +267,20 @@ function buildThinkingStatusExpression(): string {
         }
       }
       return null;
+    };
+    const hasVisibleStopButton = () => {
+      const candidates = Array.from(
+        document.querySelectorAll(
+          [
+            STOP_SELECTOR,
+            'button[aria-label*="Stop"]',
+            'button[aria-label*="stop"]',
+            '[role="button"][aria-label*="Stop"]',
+            '[role="button"][aria-label*="stop"]',
+          ].join(','),
+        ),
+      );
+      return candidates.some((node) => node instanceof HTMLElement && isVisible(node));
     };
     const findThinkingDisclosure = (scope) => {
       const candidates = Array.from(
@@ -392,6 +413,20 @@ function buildThinkingStatusExpression(): string {
         progressPercent,
         panelOpened,
         panelVisible: true,
+      };
+    }
+    const latestTurn = latestAssistantTurn();
+    const latestText = normalize(latestTurn?.textContent ?? '');
+    if (latestText.includes('finalizing answer')) {
+      return {
+        message: 'finalizing answer',
+        source: 'inline',
+      };
+    }
+    if (hasVisibleStopButton()) {
+      return {
+        message: 'active',
+        source: 'inline',
       };
     }
     const nodes = new Set();

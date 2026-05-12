@@ -373,14 +373,14 @@ export async function ensurePromptReady(
   timeoutMs: number,
   logger: BrowserLogger,
 ) {
-  const ready = await waitForPrompt(Runtime, timeoutMs);
+  const ready = await waitForPrompt(Runtime, timeoutMs, logger);
   if (!ready) {
     const authUrl = await currentUrl(Runtime);
     if (authUrl && isAuthLoginUrl(authUrl)) {
       // Learned: auth.openai.com/login can appear after cookies are copied; allow manual login window.
       logger("Auth login page detected; waiting for manual login to complete...");
       const extended = Math.min(Math.max(timeoutMs, 60_000), 20 * 60_000);
-      const loggedIn = await waitForPrompt(Runtime, extended);
+      const loggedIn = await waitForPrompt(Runtime, extended, logger);
       if (loggedIn) {
         return;
       }
@@ -425,11 +425,70 @@ function isAuthLoginUrl(url: string): boolean {
   }
 }
 
+export function buildUnarchiveConversationExpressionForTest(): string {
+  return buildUnarchiveConversationExpression();
+}
+
+function buildUnarchiveConversationExpression(): string {
+  return `(() => {
+    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    const isVisible = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const bodyText = normalize(document.body?.innerText || document.body?.textContent || '');
+    const archivedNotice =
+      bodyText.includes('conversation is archived') ||
+      bodyText.includes('this conversation is archived') ||
+      bodyText.includes('chat is archived');
+    if (!archivedNotice) {
+      return { clicked: false, reason: 'not-archived' };
+    }
+    const controls = Array.from(document.querySelectorAll('button,[role="button"]'));
+    const target = controls.find((node) => {
+      if (!(node instanceof HTMLElement) || !isVisible(node)) return false;
+      const label = normalize([
+        node.innerText,
+        node.textContent,
+        node.getAttribute('aria-label'),
+        node.getAttribute('title'),
+      ].filter(Boolean).join(' '));
+      return label.includes('unarchive') || label.includes('restore conversation');
+    });
+    if (!target) {
+      return { clicked: false, reason: 'unarchive-control-not-found' };
+    }
+    target.click();
+    return { clicked: true };
+  })()`;
+}
+
+async function clickUnarchiveConversationIfNeeded(
+  Runtime: ChromeClient["Runtime"],
+  logger?: BrowserLogger,
+): Promise<boolean> {
+  const { result } = await Runtime.evaluate({
+    expression: buildUnarchiveConversationExpression(),
+    returnByValue: true,
+  });
+  const value = result?.value as { clicked?: boolean } | undefined;
+  if (value?.clicked) {
+    logger?.("[browser] Archived ChatGPT conversation detected; clicked Unarchive.");
+    return true;
+  }
+  return false;
+}
+
 async function waitForPrompt(
   Runtime: ChromeClient["Runtime"],
   timeoutMs: number,
+  logger?: BrowserLogger,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
+  let unarchiveClicked = false;
   while (Date.now() < deadline) {
     const { result } = await Runtime.evaluate({
       expression: `(() => {
@@ -446,6 +505,11 @@ async function waitForPrompt(
     });
     if (result?.value) {
       return true;
+    }
+    if (!unarchiveClicked && (await clickUnarchiveConversationIfNeeded(Runtime, logger))) {
+      unarchiveClicked = true;
+      await delay(1000);
+      continue;
     }
     await delay(200);
   }

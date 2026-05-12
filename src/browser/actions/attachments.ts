@@ -1606,11 +1606,11 @@ export async function waitForAttachmentCompletion(
       const fileCount = typeof value.fileCount === "number" ? value.fileCount : 0;
       const fileCountSatisfied =
         expectedNormalized.length > 0 && fileCount >= expectedNormalized.length;
-      const matchesExpected = (expected: string): boolean => {
+      const matchesExpected = (expected: string, observedNames = attachedNames): boolean => {
         const baseName = expected.split("/").pop()?.split("\\").pop() ?? expected;
         const normalizedExpected = normalizeAttachmentNameForComparison(baseName);
         const expectedNoExt = normalizedExpected.replace(/\.[a-z0-9]{1,10}$/i, "");
-        return attachedNames.some((raw) => {
+        return observedNames.some((raw) => {
           if (raw.includes(normalizedExpected)) return true;
           if (expectedNoExt.length >= 6 && raw.includes(expectedNoExt)) return true;
           if (raw.includes("…") || raw.includes("...")) {
@@ -1626,7 +1626,13 @@ export async function waitForAttachmentCompletion(
           return false;
         });
       };
-      const missing = expectedNormalized.filter((expected) => !matchesExpected(expected));
+      // ChatGPT can surface mixed attachments through different DOM signals:
+      // text bundles as visible chips, PDFs/images only through the hidden file input.
+      // Treat the union as the evidence set for the "all expected names are present" gate.
+      const observedNames = [...attachedNames, ...inputNames];
+      const missing = expectedNormalized.filter(
+        (expected) => !matchesExpected(expected, observedNames),
+      );
       if (missing.length === 0 || fileCountSatisfied) {
         const stableThresholdMs = value.uploading ? 3000 : 1500;
         if (attachmentMatchSince === null) {
