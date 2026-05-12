@@ -40,7 +40,7 @@ import {
   waitForUserTurnAttachments,
   readAssistantSnapshot,
 } from "./pageActions.js";
-import { INPUT_SELECTORS } from "./constants.js";
+import { INPUT_SELECTORS, STOP_BUTTON_SELECTOR } from "./constants.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
 import { ensureThinkingTime } from "./actions/thinkingTime.js";
 import { startThinkingStatusMonitor } from "./actions/thinkingStatus.js";
@@ -243,6 +243,8 @@ type AssistantAnswer = {
   meta: { turnId?: string | null; messageId?: string | null };
 };
 
+const ACTIVE_RESPONSE_TIMEOUT_EXTENSION_MS = 60_000;
+
 async function waitForAssistantOrGeneratedImageResponse(params: {
   Runtime: ChromeClient["Runtime"];
   waitForText: () => Promise<AssistantAnswer>;
@@ -292,8 +294,15 @@ async function pollGeneratedImageOrTextAssistantResponse(
   minTurnIndex?: number,
   expectedConversationId?: string,
 ): Promise<AssistantAnswer | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  let deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (Date.now() >= deadline) {
+      const stopVisible = await isBrowserStopButtonVisible(Runtime);
+      if (!stopVisible) {
+        return null;
+      }
+      deadline = Date.now() + ACTIVE_RESPONSE_TIMEOUT_EXTENSION_MS;
+    }
     let snapshot = await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId).catch(
       () => null,
     );
@@ -321,9 +330,8 @@ async function pollGeneratedImageOrTextAssistantResponse(
         },
       };
     }
-    await delay(750);
+    await delay(Math.max(50, Math.min(750, deadline - Date.now())));
   }
-  return null;
 }
 
 function isImageOnlyUiChromeText(text: string): boolean {
@@ -334,6 +342,34 @@ function isImageOnlyUiChromeText(text: string): boolean {
     normalized === "stopped thinking" ||
     normalized === "stopped thinking edit"
   );
+}
+
+async function isBrowserStopButtonVisible(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
+  try {
+    const { result } = await Runtime.evaluate({
+      expression: `(() => {
+        const selectors = [
+          ${JSON.stringify(STOP_BUTTON_SELECTOR)},
+          'button[aria-label*="Stop"]',
+          'button[aria-label*="stop"]',
+          '[role="button"][aria-label*="Stop"]',
+          '[role="button"][aria-label*="stop"]',
+        ];
+        const isVisible = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const rect = node.getBoundingClientRect();
+          if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+          const style = window.getComputedStyle(node);
+          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+        };
+        return Array.from(document.querySelectorAll(selectors.join(','))).some(isVisible);
+      })()`,
+      returnByValue: true,
+    });
+    return result?.value === true;
+  } catch {
+    return false;
+  }
 }
 
 export interface BrowserConversationTurn {

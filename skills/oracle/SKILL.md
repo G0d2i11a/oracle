@@ -24,7 +24,9 @@ Full-detail is the default in Shawn's workflow.
 
 - Do not switch to a lite, small, summary, reduced-reference, reduced-attachment, or downgraded-model run to work around automation problems.
 - If upload, model selection, Cloudflare, composer, or status detection fails, fix or retry the browser automation while preserving the same full prompt and references.
-- If ChatGPT shows Stop, Finalizing answer, thinking, reasoning, or a thinking sidecar, the run is still active. Keep waiting; do not stop the run and do not start a smaller replacement run.
+- Do not infer a hard attachment/context size limit from one failed browser run. Treat large-upload failures as automation/network/status problems unless a controlled upload-size test proves a threshold.
+- If ChatGPT shows a Stop button, treat that as authoritative evidence that the run is still active. Keep waiting while the Stop button remains visible; do not stop the run, declare it timed out, or start a smaller replacement run.
+- Finalizing answer, thinking, reasoning, iframe progress, or a thinking sidecar are also active-progress signals. Use them as additional evidence, but the Stop button alone is enough to keep waiting.
 - If the CLI detaches or loses capture while the browser remains open, reattach to the stored session rather than sending a duplicate.
 
 ## Golden path

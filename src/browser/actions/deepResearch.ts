@@ -15,6 +15,8 @@ import { buildClickDispatcher } from "./domEvents.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./assistantResponse.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 
+const DEEP_RESEARCH_ACTIVE_TIMEOUT_EXTENSION_MS = 60_000;
+
 type ActivateOutcome =
   | { status: "activated" }
   | { status: "already-active" }
@@ -179,7 +181,8 @@ export async function waitForDeepResearchCompletion(
 
   logger(`Monitoring Deep Research (timeout: ${Math.round(timeoutMs / 60_000)}min)...`);
 
-  while (Date.now() - start < timeoutMs) {
+  let deadline = start + timeoutMs;
+  for (;;) {
     const { result } = await Runtime.evaluate({
       expression: buildDeepResearchCompletionPollExpression(minTurnLiteral),
       returnByValue: true,
@@ -244,7 +247,19 @@ export async function waitForDeepResearchCompletion(
     }
 
     lastTextLength = Math.max(val?.textLength ?? 0, frameResult?.textLength ?? 0, lastTextLength);
-    await delay(DEEP_RESEARCH_POLL_INTERVAL_MS);
+    const active = Boolean(val?.stopVisible || val?.hasIframe || frameResult?.inProgress);
+    if (Date.now() >= deadline) {
+      if (!active) {
+        break;
+      }
+      deadline = Date.now() + DEEP_RESEARCH_ACTIVE_TIMEOUT_EXTENSION_MS;
+      logger(
+        `Deep Research still active; extending wait while Stop/progress is visible (${Math.round(
+          (Date.now() - start) / 1000,
+        )}s elapsed)`,
+      );
+    }
+    await delay(Math.max(50, Math.min(DEEP_RESEARCH_POLL_INTERVAL_MS, deadline - Date.now())));
   }
 
   // Timeout — throw with metadata for potential reattach

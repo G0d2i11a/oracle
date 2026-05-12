@@ -437,6 +437,7 @@ describe("waitForDeepResearchCompletion", () => {
   });
 
   it("does not complete from an unscoped frame result during a scoped run", async () => {
+    let pagePolls = 0;
     mockRuntime.evaluate.mockImplementation(async (params?: { contextId?: number }) => {
       if (typeof params?.contextId === "number") {
         return {
@@ -450,9 +451,10 @@ describe("waitForDeepResearchCompletion", () => {
           },
         };
       }
+      pagePolls += 1;
       return {
         result: {
-          value: { finished: false, stopVisible: false, textLength: 0, hasIframe: true },
+          value: { finished: false, stopVisible: false, textLength: 0, hasIframe: pagePolls === 1 },
         },
       };
     });
@@ -472,10 +474,10 @@ describe("waitForDeepResearchCompletion", () => {
       }),
       createIsolatedWorld: vi.fn().mockResolvedValue({ executionContextId: 42 }),
     };
-    let nowCalls = 0;
+    let fakeNow = 1_000;
     const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
-      nowCalls += 1;
-      return nowCalls < 6 ? 1_000 : 2_000;
+      fakeNow += 10;
+      return fakeNow;
     });
 
     try {
@@ -572,14 +574,46 @@ describe("waitForDeepResearchCompletion", () => {
     // All polls: never completed
     mockRuntime.evaluate.mockResolvedValue({
       result: {
-        value: { finished: false, stopVisible: true, textLength: 500, hasIframe: true },
+        value: { finished: false, stopVisible: false, textLength: 500, hasIframe: false },
       },
     });
 
-    // Use very short timeout
+    // Use an already-expired timeout so the unit test does not spin while delay is mocked.
     await expect(
-      waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 100),
+      waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 0),
     ).rejects.toThrow(/did not complete/);
+  });
+
+  it("keeps waiting past timeout while Stop/progress remains visible", async () => {
+    mockRuntime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: { finished: false, stopVisible: true, textLength: 500, hasIframe: false },
+        },
+      })
+      .mockResolvedValueOnce({
+        result: {
+          value: { finished: true, stopVisible: false, textLength: 5000, hasIframe: false },
+        },
+      })
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            text: "Deep Research final report content",
+            html: "<p>Deep Research final report content</p>",
+            turnId: "t1",
+            messageId: "m1",
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        result: { value: null },
+      });
+
+    const result = await waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 0);
+
+    expect(result.text).toBe("Deep Research final report content");
+    expect(mockLogger).toHaveBeenCalledWith(expect.stringContaining("still active; extending"));
   });
 });
 
