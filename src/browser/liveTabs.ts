@@ -195,7 +195,32 @@ function buildTabInspectionExpression(): string {
         .map((selector) => document.querySelectorAll(selector))
         .find((matches) => matches && matches.length > 0);
       const currentModelButton = document.querySelector(MODEL_BUTTON_SELECTOR);
-      const hasProPill = Boolean(document.querySelector('button.__composer-pill, button[aria-label="Pro, click to remove"]'));
+      const hasProSignal = (value) => {
+        const label = normalize(value).toLowerCase();
+        return (
+          label === 'pro' ||
+          label.includes(' pro') ||
+          label.startsWith('pro ') ||
+          label.includes('extended') ||
+          label.includes('专业') ||
+          label.includes('进阶')
+        );
+      };
+      const hasProPill = Array.from(
+        document.querySelectorAll('button.__composer-pill, button[aria-label="Pro, click to remove"], button[aria-label*="Pro, click"]'),
+      ).some((node) => {
+        if (!(node instanceof HTMLElement) || !isVisible(node)) return false;
+        const label = [
+          node.getAttribute('aria-label') || '',
+          node.getAttribute('title') || '',
+          node.textContent || '',
+        ].join(' ');
+        if (!hasProSignal(label)) return false;
+        if (node.matches(MODEL_BUTTON_SELECTOR)) {
+          return hasProSignal(node.textContent || node.getAttribute('aria-label') || '');
+        }
+        return true;
+      });
       let currentModelLabel = normalize(currentModelButton?.textContent || currentModelButton?.getAttribute?.('aria-label') || '');
       if (currentModelLabel === 'ChatGPT' && hasProPill) {
         currentModelLabel = 'ChatGPT + Pro';

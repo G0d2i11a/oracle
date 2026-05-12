@@ -136,6 +136,10 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("MENU_OPEN_GRACE_MS");
     expect(expression).toContain("model-menu-not-opened");
     expect(expression).toContain("verify you are human");
+    expect(expression).toContain("const hasCloudflareChallengeText =");
+    expect(expression).not.toContain(
+      "if (text.includes('cloudflare')) pushEvidence('Cloudflare');",
+    );
   });
 
   it("recognizes ChatGPT plus the Pro composer pill as the current Pro model", () => {
@@ -144,6 +148,22 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("const withProPillSignal = (label) =>");
     expect(expression).toContain("return resolved + ' + Pro'");
     expect(expression).toContain("normalizedLabel === 'chatgpt' && hasProComposerPill()");
+    expect(expression).toContain("node.matches(BUTTON_SELECTOR)");
+    expect(expression).toContain("if (normalized !== 'chatgpt') return resolved;");
+  });
+
+  it("does not treat every composer pill as a Pro pill", () => {
+    const expression = buildModelSelectionExpressionForTest("Pro");
+    expect(expression).not.toContain(
+      "Boolean(\\n      document.querySelector('button.__composer-pill, button[aria-label=\"Pro, click to remove\"]')",
+    );
+    expect(expression).toContain("if (!value || hasThinkingText(value)) return false;");
+    expect(expression).toContain(
+      "if (!hasProText(value) && !hasExtendedText(value)) return false;",
+    );
+    expect(expression).toContain(
+      "if (wantsPro && !hasProText(normalizedLabel) && !hasExtendedText(normalizedLabel)) return false;",
+    );
   });
 
   it("hard-rejects Thinking candidates when targeting Pro", () => {
@@ -189,6 +209,9 @@ describe("browser model selection matchers", () => {
 
   it("fails loudly if post-selection state resolves to Thinking instead of Pro Extended", () => {
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "Thinking 5.5 Heavy")).toThrow(
+      /requires GPT-5.5 Pro Extended/,
+    );
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "Instant + Pro")).toThrow(
       /requires GPT-5.5 Pro Extended/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "GPT-5.5")).toThrow(

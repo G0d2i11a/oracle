@@ -498,6 +498,40 @@ describe("waitForAssistantResponse", () => {
     const result = await waitForAssistantResponse(runtime, 200, logger);
     expect(result.text).toBe("Recovered real answer");
   });
+
+  test("ignores one-token sentence starters and waits for a real assistant answer", async () => {
+    const evaluate = vi
+      .fn()
+      .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+        if (params?.awaitPromise) {
+          return {
+            result: {
+              type: "object",
+              value: { text: "The", html: "<p>The</p>" },
+            },
+          };
+        }
+        if (
+          typeof params?.expression === "string" &&
+          params.expression.includes("extractAssistantTurn")
+        ) {
+          return {
+            result: {
+              value: {
+                text: "Recovered full answer",
+                html: "<p>Recovered full answer</p>",
+                messageId: "mid",
+                turnId: "tid",
+              },
+            },
+          };
+        }
+        return { result: { value: null } };
+      });
+    const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+    const result = await waitForAssistantResponse(runtime, 200, logger);
+    expect(result.text).toBe("Recovered full answer");
+  });
 });
 
 describe("uploadAttachmentFile", () => {

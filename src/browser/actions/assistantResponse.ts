@@ -45,6 +45,11 @@ function isAssistantUiActionText(normalized: string): boolean {
   );
 }
 
+function isLikelyTruncatedAssistantText(normalized: string): boolean {
+  const text = normalized.trim();
+  return text === "a" || text === "an" || text === "the";
+}
+
 export async function waitForAssistantResponse(
   Runtime: ChromeClient["Runtime"],
   timeoutMs: number,
@@ -355,6 +360,9 @@ async function parseAssistantEvaluationResult(
     if (isAnswerNowPlaceholderText(normalized) || isAssistantUiActionText(normalized)) {
       return null;
     }
+    if (isLikelyTruncatedAssistantText(normalized)) {
+      return null;
+    }
     return { text, html, meta: { turnId, messageId } };
   }
   const fallbackText =
@@ -364,7 +372,8 @@ async function parseAssistantEvaluationResult(
   }
   if (
     isAnswerNowPlaceholderText(fallbackText.toLowerCase()) ||
-    isAssistantUiActionText(fallbackText.toLowerCase())
+    isAssistantUiActionText(fallbackText.toLowerCase()) ||
+    isLikelyTruncatedAssistantText(fallbackText.toLowerCase())
   ) {
     return null;
   }
@@ -584,6 +593,9 @@ function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
     return null;
   }
   if (isAssistantUiActionText(normalized)) {
+    return null;
+  }
+  if (isLikelyTruncatedAssistantText(normalized)) {
     return null;
   }
   // Ignore user echo turns that can show up in project view fallbacks.

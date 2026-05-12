@@ -212,9 +212,10 @@ function assertResolvedModelSelection(desiredModel: string, resolvedLabel: strin
     resolved.includes("gpt-5.5-pro") ||
     resolved.includes("gpt 5 5 pro");
   const hasThinkingSignal = resolved.includes("thinking") || resolved.includes("思考");
+  const hasInstantSignal = resolved.includes("instant");
   const resolvedHasProSignal =
     resolved.includes("pro") || resolved.includes("专业") || resolved.includes("进阶");
-  if (!hasProSignal || (hasThinkingSignal && !resolvedHasProSignal)) {
+  if (!hasProSignal || hasInstantSignal || (hasThinkingSignal && !resolvedHasProSignal)) {
     throw new Error(
       `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires GPT-5.5 Pro Extended. Use model "gpt-5.5" with browser thinking time "heavy" for Thinking Heavy.`,
     );
@@ -311,19 +312,27 @@ function buildModelSelectionExpression(
           'script[src*="challenge-platform"], iframe[src*="challenges.cloudflare.com"], input[name="cf-turnstile-response"], [data-cf-beacon], [id^="cf-"], [class*="cf-turnstile"]',
         )
       );
+      const hasCloudflareUrl =
+        url.includes('/cdn-cgi/') || url.includes('challenges.cloudflare.com');
+      const hasCloudflareChallengeText =
+        text.includes('just a moment') ||
+        text.includes('checking your browser') ||
+        text.includes('review the security');
       if (hasCloudflareDom) pushEvidence('cloudflare challenge markup');
       if (text.includes('just a moment')) pushEvidence('Just a moment');
       if (text.includes('checking your browser')) pushEvidence('checking your browser');
-      if (text.includes('verify you are human')) pushEvidence('verify you are human');
       if (text.includes('review the security')) pushEvidence('security review');
-      if (text.includes('cloudflare')) pushEvidence('Cloudflare');
-      if (url.includes('/cdn-cgi/') || url.includes('challenges.cloudflare.com')) {
+      if (text.includes('cloudflare') && (hasCloudflareDom || hasCloudflareUrl || hasCloudflareChallengeText)) {
+        pushEvidence('Cloudflare');
+      }
+      if (hasCloudflareUrl) {
         pushEvidence('Cloudflare challenge URL');
       }
-      if (hasCloudflareDom || evidence.some((label) => /cloudflare|just a moment|checking your browser|challenge url/i.test(label))) {
+      if (hasCloudflareDom || hasCloudflareUrl || hasCloudflareChallengeText) {
         return { kind: 'cloudflare-challenge', title, url, evidence };
       }
       if (
+        text.includes('verify you are human') ||
         text.includes('human verification') ||
         text.includes('captcha') ||
         text.includes('confirm you are human') ||
@@ -390,9 +399,34 @@ function buildModelSelectionExpression(
       }
       return false;
     };
-    const hasProComposerPill = () => Boolean(
-      document.querySelector('button.__composer-pill, button[aria-label="Pro, click to remove"]')
-    );
+    const hasProComposerPill = () =>
+      Array.from(
+        document.querySelectorAll(
+          'button.__composer-pill, button[aria-label="Pro, click to remove"], button[aria-label*="Pro, click"]',
+        ),
+      ).some((node) => {
+        if (!(node instanceof HTMLElement) || !isVisible(node)) return false;
+        const value = normalizeText(
+          [
+            node.getAttribute('aria-label') || '',
+            node.getAttribute('title') || '',
+            node.textContent || '',
+          ].join(' '),
+        );
+        if (!value || hasThinkingText(value)) return false;
+        if (!hasProText(value) && !hasExtendedText(value)) return false;
+        // The current model button is also a composer pill in ChatGPT's newer UI.
+        // Only count it as a Pro signal when its own label says Pro/Extended.
+        if (node.matches(BUTTON_SELECTOR)) {
+          const buttonValue = normalizeText(readableLabelFor(node));
+          return (
+            isTargetGpt55VisibleAlias(buttonValue) ||
+            ((hasProText(buttonValue) || hasExtendedText(buttonValue)) &&
+              !hasThinkingText(buttonValue))
+          );
+        }
+        return true;
+      });
     const compactVersion = (version) => version.replace(/-/g, '');
     const spacedVersion = (version) => version.replace(/-/g, ' ');
     const dottedVersion = (version) => version.replace(/-/g, '.');
@@ -450,7 +484,9 @@ function buildModelSelectionExpression(
       const resolved = label || '';
       if (!wantsPro || !hasProComposerPill()) return resolved;
       const normalized = normalizeText(resolved);
-      if (!normalized || normalized.includes('pro')) return resolved;
+      if (!normalized) return 'Pro';
+      if (hasProText(normalized) || hasExtendedText(normalized)) return resolved;
+      if (normalized !== 'chatgpt') return resolved;
       return resolved + ' + Pro';
     };
     const getResolvedLabel = (fallback) =>
@@ -472,11 +508,11 @@ function buildModelSelectionExpression(
       if (desiredVersion) {
         if (!normalizedLabel.includes(spacedVersion(desiredVersion))) return false;
       }
-      if (wantsPro && !normalizedLabel.includes(' pro')) return false;
+      if (wantsPro && !hasProText(normalizedLabel) && !hasExtendedText(normalizedLabel)) return false;
       if (wantsInstant && !normalizedLabel.includes('instant')) return false;
       if (wantsThinking && !normalizedLabel.includes('thinking')) return false;
       // Also reject if button has variants we DON'T want
-      if (!wantsPro && normalizedLabel.includes(' pro')) return false;
+      if (!wantsPro && hasProText(normalizedLabel)) return false;
       if (!wantsInstant && normalizedLabel.includes('instant')) return false;
       if (!wantsThinking && normalizedLabel.includes('thinking')) return false;
       return true;
