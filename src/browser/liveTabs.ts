@@ -8,9 +8,9 @@ import {
   INPUT_SELECTORS,
   MODEL_BUTTON_SELECTOR,
   SEND_BUTTON_SELECTORS,
-  STOP_BUTTON_SELECTOR,
 } from "./constants.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./actions/assistantResponse.js";
+import { buildVisibleStopButtonFunction } from "./actions/stopButton.js";
 import { delay } from "./utils.js";
 
 export const DEFAULT_REMOTE_CHROME_HOST = "127.0.0.1";
@@ -145,7 +145,6 @@ function buildTabInspectionExpression(): string {
   const turnSelectorLiteral = escapeLiteral(CONVERSATION_TURN_SELECTOR);
   const assistantRoleLiteral = escapeLiteral(ASSISTANT_ROLE_SELECTOR);
   const modelButtonSelectorLiteral = escapeLiteral(MODEL_BUTTON_SELECTOR);
-  const stopSelectorLiteral = escapeLiteral(STOP_BUTTON_SELECTOR);
   return `(() => {
       const INPUT_SELECTORS = ${inputSelectorsLiteral};
       const SEND_SELECTORS = ${sendSelectorsLiteral};
@@ -153,7 +152,7 @@ function buildTabInspectionExpression(): string {
       const TURN_SELECTOR = ${turnSelectorLiteral};
       const ASSISTANT_ROLE_SELECTOR = ${assistantRoleLiteral};
       const MODEL_BUTTON_SELECTOR = ${modelButtonSelectorLiteral};
-      const STOP_BUTTON_SELECTOR = ${stopSelectorLiteral};
+      ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
       const LOGIN_CTA = ${LOGIN_CTA_PATTERN.toString()};
       const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
       const isVisible = (node) => {
@@ -175,8 +174,7 @@ function buildTabInspectionExpression(): string {
         const label = normalize(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title'));
         return LOGIN_CTA.test(label);
       });
-      const stopButton = document.querySelector(STOP_BUTTON_SELECTOR);
-      const stopExists = Boolean(stopButton && isVisible(stopButton));
+      const stopExists = hasVisibleStopButton();
       const sendButton = firstVisible(SEND_SELECTORS);
       const sendExists = Boolean(sendButton);
       const promptNode = firstVisible(INPUT_SELECTORS);

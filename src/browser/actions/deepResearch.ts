@@ -7,12 +7,12 @@ import {
   DEEP_RESEARCH_AUTO_CONFIRM_WAIT_MS,
   DEEP_RESEARCH_DEFAULT_TIMEOUT_MS,
   FINISHED_ACTIONS_SELECTOR,
-  STOP_BUTTON_SELECTOR,
   CONVERSATION_TURN_SELECTOR,
 } from "../constants.js";
 import { delay } from "../utils.js";
 import { buildClickDispatcher } from "./domEvents.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./assistantResponse.js";
+import { buildVisibleStopButtonFunction } from "./stopButton.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 
 const DEEP_RESEARCH_ACTIVE_TIMEOUT_EXTENSION_MS = 60_000;
@@ -713,10 +713,10 @@ export async function checkDeepResearchStatus(
 
 function buildDeepResearchStatusExpression(): string {
   const finishedSelector = JSON.stringify(FINISHED_ACTIONS_SELECTOR);
-  const stopSelector = JSON.stringify(STOP_BUTTON_SELECTOR);
 
   return `(() => {
-    const stopVisible = Boolean(document.querySelector(${stopSelector}));
+    ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
+    const stopVisible = hasVisibleStopButton();
     const iframes = Array.from(document.querySelectorAll('iframe')).filter(f => {
       const rect = f.getBoundingClientRect();
       return rect.width > 200 && rect.height > 200;
@@ -740,11 +740,11 @@ function buildDeepResearchStatusExpression(): string {
 
 function buildDeepResearchCompletionPollExpression(minTurnIndex: number): string {
   const finishedSelector = JSON.stringify(FINISHED_ACTIONS_SELECTOR);
-  const stopSelector = JSON.stringify(STOP_BUTTON_SELECTOR);
   const turnSelector = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   return `(() => {
     const MIN_TURN_INDEX = ${minTurnIndex};
-    const stopVisible = Boolean(document.querySelector(${stopSelector}));
+    ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
+    const stopVisible = hasVisibleStopButton();
     const scopedToNewTurns = MIN_TURN_INDEX >= 0;
     const pageText = String(document.body?.innerText || '').toLowerCase().replace(/\\s+/g, ' ');
     const accountBlocked = pageText.includes('suspicious activity detected') &&

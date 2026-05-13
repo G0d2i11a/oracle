@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtemp, rm, readFile, stat } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import os from "node:os";
@@ -188,7 +189,7 @@ describe("session lifecycle", () => {
   });
 
   test("keeps running browser sessions when Chrome runtime is reachable", async () => {
-    const server = createServer();
+    const server = createNetServer();
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;
     const meta = await sessionModule.initializeSession(
@@ -211,6 +212,40 @@ describe("session lifecycle", () => {
     expect(refreshed?.status).toBe("running");
   });
 
+  test("marks running browser sessions as error when the ChatGPT tab is gone", async () => {
+    const server = createHttpServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify([{ id: "other-target", type: "page", url: "https://chatgpt.com/c/other" }]),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Browser tab gone", model: "gpt-5.2-pro", mode: "browser" },
+      "/tmp/cwd",
+    );
+    await sessionModule.updateSessionMetadata(meta.id, {
+      status: "running",
+      mode: undefined as unknown as SessionMetadata["mode"],
+      browser: {
+        runtime: {
+          chromePid: process.pid,
+          chromePort: port,
+          chromeHost: "127.0.0.1",
+          chromeTargetId: "expected-target",
+          tabUrl: "https://chatgpt.com/c/expected",
+          conversationId: "expected",
+        },
+      },
+    });
+    const refreshed = await sessionModule.readSessionMetadata(meta.id);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    expect(refreshed?.status).toBe("error");
+    expect(refreshed?.errorMessage).toMatch(/tab/i);
+    expect(refreshed?.response?.incompleteReason).toBe("browser-tab-disconnected");
+  });
+
   test("marks running browser sessions as error when Chrome runtime is gone", async () => {
     const meta = await sessionModule.initializeSession(
       { prompt: "Browser dead", model: "gpt-5.2-pro", mode: "browser" },
@@ -230,6 +265,10 @@ describe("session lifecycle", () => {
     const refreshed = await sessionModule.readSessionMetadata(meta.id);
     expect(refreshed?.status).toBe("error");
     expect(refreshed?.errorMessage).toMatch(/chrome/i);
+    await sessionModule.listSessionsMetadata();
+    const paths = await sessionModule.getSessionPaths(meta.id);
+    const persisted = JSON.parse(await readFile(paths.metadata, "utf8")) as SessionMetadata;
+    expect(persisted.status).toBe("error");
   });
 });
 

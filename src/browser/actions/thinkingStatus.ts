@@ -1,10 +1,7 @@
 import type { BrowserLogger, ChromeClient } from "../types.js";
 import { formatElapsed } from "../../oracle/format.js";
-import {
-  ASSISTANT_ROLE_SELECTOR,
-  CONVERSATION_TURN_SELECTOR,
-  STOP_BUTTON_SELECTOR,
-} from "../constants.js";
+import { ASSISTANT_ROLE_SELECTOR, CONVERSATION_TURN_SELECTOR } from "../constants.js";
+import { buildVisibleStopButtonFunction } from "./stopButton.js";
 
 const THINKING_STALE_HINT_MS = 10 * 60_000;
 
@@ -190,7 +187,6 @@ export function sanitizeThinkingText(raw: string): string {
 function buildThinkingStatusExpression(): string {
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
-  const stopSelectorLiteral = JSON.stringify(STOP_BUTTON_SELECTOR);
   const selectors = [
     "span.loading-shimmer",
     "span.flex.items-center.gap-1.truncate.text-start.align-middle.text-token-text-tertiary",
@@ -205,7 +201,7 @@ function buildThinkingStatusExpression(): string {
   return `(async () => {
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
-    const STOP_SELECTOR = ${stopSelectorLiteral};
+    ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
     const selectors = ${selectorLiteral};
     const keywords = ${keywordsLiteral};
     const normalize = (value) =>
@@ -267,20 +263,6 @@ function buildThinkingStatusExpression(): string {
         }
       }
       return null;
-    };
-    const hasVisibleStopButton = () => {
-      const candidates = Array.from(
-        document.querySelectorAll(
-          [
-            STOP_SELECTOR,
-            'button[aria-label*="Stop"]',
-            'button[aria-label*="stop"]',
-            '[role="button"][aria-label*="Stop"]',
-            '[role="button"][aria-label*="stop"]',
-          ].join(','),
-        ),
-      );
-      return candidates.some((node) => node instanceof HTMLElement && isVisible(node));
     };
     const findThinkingDisclosure = (scope) => {
       const candidates = Array.from(

@@ -614,12 +614,48 @@ export async function listSessionsMetadata(): Promise<SessionMetadata[]> {
   for (const entry of entries) {
     let meta = await readSessionMetadata(entry);
     if (meta) {
+      await persistDerivedRuntimeStatus(entry, meta);
       meta = await markDeadBrowser(meta, { persist: true });
       meta = await markZombie(meta, { persist: true }); // keep stored metadata consistent with zombie detection
+      await persistDerivedRuntimeStatus(entry, meta);
       metas.push(meta);
     }
   }
   return metas.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+async function persistDerivedRuntimeStatus(
+  sessionId: string,
+  meta: SessionMetadata,
+): Promise<void> {
+  const existing = await readStoredSessionRecord(sessionId);
+  if (!existing) {
+    return;
+  }
+  if (
+    existing.status === meta.status &&
+    existing.errorMessage === meta.errorMessage &&
+    existing.completedAt === meta.completedAt &&
+    JSON.stringify(existing.response ?? null) === JSON.stringify(meta.response ?? null)
+  ) {
+    return;
+  }
+  await fs.writeFile(metaPath(meta.id), JSON.stringify({ ...existing, ...meta }, null, 2), "utf8");
+}
+
+async function readStoredSessionRecord(sessionId: string): Promise<SessionMetadata | null> {
+  const candidates = [metaPath(sessionId), legacySessionPath(sessionId)];
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(candidate, "utf8")) as unknown;
+      if (isSessionMetadataRecord(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Try the next storage layout.
+    }
+  }
+  return null;
 }
 
 export function filterSessionsByRange(
@@ -823,7 +859,7 @@ async function markDeadBrowser(
   meta: SessionMetadata,
   { persist }: { persist: boolean },
 ): Promise<SessionMetadata> {
-  if (meta.status !== "running" || meta.mode !== "browser") {
+  if (meta.status !== "running" || (meta.mode !== "browser" && !meta.browser?.runtime)) {
     return meta;
   }
   const runtime = meta.browser?.runtime;
@@ -838,20 +874,29 @@ async function markDeadBrowser(
     const host = runtime.chromeHost ?? "127.0.0.1";
     signals.push(await isPortOpen(host, runtime.chromePort));
   }
-  if (signals.length === 0 || signals.some(Boolean)) {
+  if (signals.length === 0) {
     return meta;
   }
+  if (signals.some(Boolean) && (await browserTabStillReachable(runtime))) {
+    return meta;
+  }
+  const incompleteReason = signals.some(Boolean)
+    ? "browser-tab-disconnected"
+    : "chrome-disconnected";
   const response = meta.response
     ? {
         ...meta.response,
         status: "error",
-        incompleteReason: meta.response.incompleteReason ?? "chrome-disconnected",
+        incompleteReason: meta.response.incompleteReason ?? incompleteReason,
       }
-    : { status: "error", incompleteReason: "chrome-disconnected" };
+    : { status: "error", incompleteReason };
   const updated: SessionMetadata = {
     ...meta,
     status: "error",
-    errorMessage: "Browser session ended (Chrome is no longer reachable)",
+    errorMessage:
+      incompleteReason === "browser-tab-disconnected"
+        ? "Browser session ended (ChatGPT tab is no longer reachable)"
+        : "Browser session ended (Chrome is no longer reachable)",
     completedAt: new Date().toISOString(),
     response,
   };
@@ -859,6 +904,75 @@ async function markDeadBrowser(
     await fs.writeFile(metaPath(meta.id), JSON.stringify(updated, null, 2), "utf8");
   }
   return updated;
+}
+
+async function browserTabStillReachable(runtime: BrowserRuntimeMetadata): Promise<boolean> {
+  const refs = [
+    runtime.chromeTargetId,
+    runtime.tabUrl,
+    runtime.conversationId,
+    extractConversationId(runtime.tabUrl),
+  ].filter((value): value is string => Boolean(value));
+  if (refs.length === 0) {
+    return true;
+  }
+  const host = runtime.chromeHost ?? "127.0.0.1";
+  const port = runtime.chromePort;
+  if (!port) {
+    return true;
+  }
+  const targets = await listChromeTargets(host, port);
+  if (!targets) {
+    return true;
+  }
+  return targets.some((target) =>
+    refs.some(
+      (ref) => target.id === ref || target.url === ref || extractConversationId(target.url) === ref,
+    ),
+  );
+}
+
+async function listChromeTargets(
+  host: string,
+  port: number,
+): Promise<Array<{ id?: string; url?: string }> | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CHROME_RUNTIME_TIMEOUT_MS);
+  try {
+    const response = await fetch(`http://${host}:${port}/json/list`, {
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const parsed = (await response.json()) as unknown;
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed
+      .filter((entry): entry is { id?: string; url?: string; type?: string } => Boolean(entry))
+      .filter((entry) => !entry.type || entry.type === "page")
+      .map((entry) => ({
+        id: typeof entry.id === "string" ? entry.id : undefined,
+        url: typeof entry.url === "string" ? entry.url : undefined,
+      }));
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractConversationId(url: string | undefined): string | null {
+  if (!url) {
+    return null;
+  }
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname.match(/\/c\/([^/?#]+)/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function isZombie(meta: SessionMetadata): Promise<boolean> {

@@ -40,8 +40,9 @@ import {
   waitForUserTurnAttachments,
   readAssistantSnapshot,
 } from "./pageActions.js";
-import { INPUT_SELECTORS, STOP_BUTTON_SELECTOR } from "./constants.js";
+import { INPUT_SELECTORS } from "./constants.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
+import { buildVisibleStopButtonFunction } from "./actions/stopButton.js";
 import { ensureThinkingTime } from "./actions/thinkingTime.js";
 import { startThinkingStatusMonitor } from "./actions/thinkingStatus.js";
 import {
@@ -320,7 +321,8 @@ async function pollGeneratedImageOrTextAssistantResponse(
     const text = typeof snapshot?.text === "string" ? snapshot.text.trim() : "";
     const html = typeof snapshot?.html === "string" ? snapshot.html : "";
     const hasGeneratedImage = html.includes("/backend-api/estuary/content?id=file_");
-    if (text && (hasGeneratedImage || !isImageOnlyUiChromeText(text))) {
+    const stopVisible = await isBrowserStopButtonVisible(Runtime);
+    if (text && !stopVisible && (hasGeneratedImage || !isImageOnlyUiChromeText(text))) {
       return {
         text,
         html,
@@ -348,21 +350,8 @@ async function isBrowserStopButtonVisible(Runtime: ChromeClient["Runtime"]): Pro
   try {
     const { result } = await Runtime.evaluate({
       expression: `(() => {
-        const selectors = [
-          ${JSON.stringify(STOP_BUTTON_SELECTOR)},
-          'button[aria-label*="Stop"]',
-          'button[aria-label*="stop"]',
-          '[role="button"][aria-label*="Stop"]',
-          '[role="button"][aria-label*="stop"]',
-        ];
-        const isVisible = (node) => {
-          if (!(node instanceof HTMLElement)) return false;
-          const rect = node.getBoundingClientRect();
-          if (!rect || rect.width <= 0 || rect.height <= 0) return false;
-          const style = window.getComputedStyle(node);
-          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
-        };
-        return Array.from(document.querySelectorAll(selectors.join(','))).some(isVisible);
+        ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
+        return hasVisibleStopButton();
       })()`,
       returnByValue: true,
     });

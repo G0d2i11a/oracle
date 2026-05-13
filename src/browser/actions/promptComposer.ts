@@ -5,12 +5,12 @@ import {
   PROMPT_FALLBACK_SELECTOR,
   SEND_BUTTON_SELECTORS,
   CONVERSATION_TURN_SELECTOR,
-  STOP_BUTTON_SELECTOR,
   ASSISTANT_ROLE_SELECTOR,
 } from "../constants.js";
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
+import { buildVisibleStopButtonFunction } from "./stopButton.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 
 const ENTER_KEY_EVENT = {
@@ -603,7 +603,6 @@ async function verifyPromptCommitted(
   const primarySelectorLiteral = JSON.stringify(PROMPT_PRIMARY_SELECTOR);
   const fallbackSelectorLiteral = JSON.stringify(PROMPT_FALLBACK_SELECTOR);
   const inputSelectorsLiteral = JSON.stringify(INPUT_SELECTORS);
-  const stopSelectorLiteral = JSON.stringify(STOP_BUTTON_SELECTOR);
   const assistantSelectorLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   const turnSelectorLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   let baseline: number | null =
@@ -670,7 +669,8 @@ async function verifyPromptCommitted(
 		        (normalizedPromptPrefix.length > 30 && lastTurn.includes(normalizedPromptPrefix)));
 		    const baseline = ${baselineLiteral};
 		    const hasNewTurn = baseline < 0 ? false : normalizedTurns.length > baseline;
-		    const stopVisible = Boolean(document.querySelector(${stopSelectorLiteral}));
+		    ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
+		    const stopVisible = hasVisibleStopButton();
 		    const assistantVisible = Boolean(
 		      document.querySelector(${assistantSelectorLiteral}) ||
 		      document.querySelector('[data-testid*="assistant"]'),

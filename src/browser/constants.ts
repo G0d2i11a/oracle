@@ -72,6 +72,9 @@ export const UPLOAD_STATUS_SELECTORS = [
 ];
 
 export const STOP_BUTTON_SELECTOR = '[data-testid="stop-button"]';
+export const STOP_BUTTON_SELECTORS = [STOP_BUTTON_SELECTOR, '[data-testid*="stop-button"]'];
+export const STOP_BUTTON_LABEL_PATTERN =
+  "\\b(stop|pause|interrupt)(?:\\s+(?:generating|answering|response|thinking|reasoning|streaming|request|generation))?\\b|停止(?:生成|回答|响应|思考)?|暂停(?:生成|回答|响应|思考)?|中止(?:生成|回答|响应|思考)?|终止(?:生成|回答|响应|思考)?";
 export const SEND_BUTTON_SELECTORS = [
   'button[data-testid="send-button"]',
   'button[data-testid*="composer-send"]',

@@ -5,7 +5,6 @@ import {
   CONVERSATION_TURN_SELECTOR,
   COPY_BUTTON_SELECTOR,
   FINISHED_ACTIONS_SELECTOR,
-  STOP_BUTTON_SELECTOR,
 } from "../constants.js";
 import { delay } from "../utils.js";
 import {
@@ -15,6 +14,7 @@ import {
 } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
 import { readThinkingStatus } from "./thinkingStatus.js";
+import { buildVisibleStopButtonFunction } from "./stopButton.js";
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
 const ASSISTANT_ACTIVE_TIMEOUT_EXTENSION_MS = 60_000;
@@ -550,21 +550,8 @@ async function isStopButtonVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
   try {
     const { result } = await Runtime.evaluate({
       expression: `(() => {
-        const selectors = [
-          '${STOP_BUTTON_SELECTOR}',
-          'button[aria-label*="Stop"]',
-          'button[aria-label*="stop"]',
-          '[role="button"][aria-label*="Stop"]',
-          '[role="button"][aria-label*="stop"]',
-        ];
-        const isVisible = (node) => {
-          if (!(node instanceof HTMLElement)) return false;
-          const rect = node.getBoundingClientRect();
-          if (!rect || rect.width <= 0 || rect.height <= 0) return false;
-          const style = window.getComputedStyle(node);
-          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
-        };
-        return Array.from(document.querySelectorAll(selectors.join(','))).some(isVisible);
+        ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
+        return hasVisibleStopButton();
       })()`,
       returnByValue: true,
     });
@@ -761,11 +748,11 @@ function buildResponseObserverExpression(
   return `(() => {
     ${buildClickDispatcher()}
     const SELECTORS = ${selectorsLiteral};
-    const STOP_SELECTOR = '${STOP_BUTTON_SELECTOR}';
     const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
     const EXPECTED_CONVERSATION_ID = ${expectedConversationLiteral};
+    ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
     // Learned: settling avoids capturing mid-stream HTML; keep short.
     const settleDelayMs = 800;
     const currentConversationId = () => {
@@ -851,18 +838,6 @@ function buildResponseObserverExpression(
 	          const style = window.getComputedStyle(node);
 	          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
 	        };
-	        const hasVisibleStopButton = () =>
-	          Array.from(
-	            document.querySelectorAll(
-	              [
-	                STOP_SELECTOR,
-	                'button[aria-label*="Stop"]',
-	                'button[aria-label*="stop"]',
-	                '[role="button"][aria-label*="Stop"]',
-	                '[role="button"][aria-label*="stop"]',
-	              ].join(','),
-	            ),
-	          ).some(isVisible);
 	        const latestAssistantText = () => {
 	          const fromTurns = extractFromTurns();
 	          if (fromTurns?.text) return fromTurns.text;

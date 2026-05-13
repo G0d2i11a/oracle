@@ -27,6 +27,7 @@
 
 ### Fixed
 
+- Browser: treat visible ChatGPT Stop/Pause controls as the highest-priority active-run signal across assistant capture, Deep Research, live-tab status, and stale-session cleanup, including localized labels such as `停止` and `暂停`.
 - Browser/MCP: harden ChatGPT Pro browser consults with louder GPT-5.5 Pro selection validation, resolved MCP dry-run details, assistant-timeout diagnostics, incomplete-capture reattach metadata, and clean Pro Extended live-run metadata. (#177) — thanks @pdurlej.
 - Browser: detect Cloudflare/manual-verification interruptions during model selection, stop retry-clicking when the picker never opens, and accept ChatGPT's current `Extended Pro` label for GPT-5.5 Pro browser runs.
 - Browser: target ChatGPT's `5.5 Extended Pro` picker label by default for GPT-5.5 Pro browser runs.
