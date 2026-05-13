@@ -17,6 +17,8 @@ import type {
   BrowserResearchMode,
 } from "../browser/types.js";
 import type { CookieParam } from "../browser/types.js";
+import { deriveBrowserOwnerLabel, sanitizeBrowserOwnerLabel } from "../browser/ownerLabel.js";
+import type { BrowserOwnerLabelSource } from "../browser/ownerLabel.js";
 import { getOracleHomeDir } from "../oracleHome.js";
 
 const DEFAULT_BROWSER_TIMEOUT_MS = 1_200_000;
@@ -46,6 +48,10 @@ const BROWSER_MODEL_LABELS: [ModelName, string][] = [
 ];
 
 export interface BrowserFlagOptions {
+  ownerLabel?: string | null;
+  ownerSource?: BrowserOwnerLabelSource | null;
+  slug?: string;
+  sessionId?: string;
   browserChromeProfile?: string;
   browserChromePath?: string;
   browserCookiePath?: string;
@@ -154,6 +160,17 @@ export async function buildBrowserConfig(
   });
   const rawUrl = options.chatgptUrl ?? options.browserUrl;
   const url = rawUrl ? normalizeChatgptUrl(rawUrl, CHATGPT_URL) : undefined;
+  const presetOwnerLabel = sanitizeBrowserOwnerLabel(options.ownerLabel);
+  const browserOwner =
+    presetOwnerLabel && options.ownerSource
+      ? { label: presetOwnerLabel, source: options.ownerSource }
+      : deriveBrowserOwnerLabel({
+          explicit: presetOwnerLabel,
+          optionSlug: options.slug,
+          sessionId: options.sessionId,
+          cwd: process.cwd(),
+          pid: process.pid,
+        });
 
   const desiredModel = shouldUseOverride
     ? desiredModelOverride
@@ -172,6 +189,8 @@ export async function buildBrowserConfig(
   }
 
   return {
+    ownerLabel: browserOwner?.label,
+    ownerSource: browserOwner?.source,
     chromeProfile: options.browserChromeProfile ?? DEFAULT_CHROME_PROFILE,
     chromePath: options.browserChromePath ?? null,
     chromeCookiePath: options.browserCookiePath ?? null,
@@ -303,7 +322,10 @@ export function resolveBrowserModelLabel(input: string | undefined, model: Model
   if (normalizedInput === model.toLowerCase()) {
     return mapModelToBrowserLabel(model);
   }
-  if (normalizeChatGptModelForBrowser(model) === "gpt-5.5-pro" && isGenericProBrowserAlias(normalizedInput)) {
+  if (
+    normalizeChatGptModelForBrowser(model) === "gpt-5.5-pro" &&
+    isGenericProBrowserAlias(normalizedInput)
+  ) {
     return mapModelToBrowserLabel(model);
   }
   return trimmed;
@@ -318,9 +340,7 @@ function isGenericProBrowserAlias(normalizedInput: string): boolean {
     return true;
   }
   const mentions55 =
-    normalized.includes("5.5") ||
-    normalized.includes("5 5") ||
-    normalized.includes("55");
+    normalized.includes("5.5") || normalized.includes("5 5") || normalized.includes("55");
   return mentions55 && normalized.includes("pro") && !normalized.includes("extended");
 }
 

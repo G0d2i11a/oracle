@@ -29,6 +29,7 @@ import { loadUserConfig, type UserConfig } from "../../config.js";
 import { resolveNotificationSettings } from "../../cli/notifier.js";
 import { mapModelToBrowserLabel, resolveBrowserModelLabel } from "../../cli/browserConfig.js";
 import type { BrowserModelStrategy } from "../../browser/types.js";
+import { deriveBrowserOwnerLabel } from "../../browser/ownerLabel.js";
 
 // Use raw shapes so the MCP SDK (with its bundled Zod) wraps them and emits valid JSON Schema.
 const consultInputShape = {
@@ -232,6 +233,7 @@ export function buildConsultBrowserConfig({
   browserResearchMode,
   browserArchive,
   browserKeepBrowser,
+  slug,
 }: {
   userConfig: UserConfig;
   env: Record<string, string | undefined>;
@@ -243,6 +245,7 @@ export function buildConsultBrowserConfig({
   browserResearchMode?: "deep";
   browserArchive?: "auto" | "always" | "never";
   browserKeepBrowser?: boolean;
+  slug?: string;
 }): BrowserSessionConfig {
   const configuredBrowser = userConfig.browser ?? {};
   const envProfileDir = (env.ORACLE_BROWSER_PROFILE_DIR ?? "").trim();
@@ -254,9 +257,18 @@ export function buildConsultBrowserConfig({
     : resolveBrowserModelLabel(preferredLabel, runModel);
   const configuredUrl = configuredBrowser.chatgptUrl ?? configuredBrowser.url ?? CHATGPT_URL;
   const manualLogin = hasProfileDir ? true : (configuredBrowser.manualLogin ?? false);
+  const owner = deriveBrowserOwnerLabel({
+    explicit: configuredBrowser.ownerLabel,
+    optionSlug: slug,
+    cwd: process.cwd(),
+    pid: process.pid,
+    env,
+  });
 
   return {
     ...configuredBrowser,
+    ownerLabel: owner?.label,
+    ownerSource: owner?.source,
     url: configuredUrl,
     chatgptUrl: configuredUrl,
     cookieSync: !manualLogin,
@@ -453,6 +465,7 @@ export function registerConsultTool(server: McpServer): void {
           browserResearchMode,
           browserArchive,
           browserKeepBrowser,
+          slug,
         });
       }
 

@@ -8,6 +8,7 @@ import type {
 } from "../browser/types.js";
 
 export interface BrowserDefaultsOptions {
+  ownerLabel?: string | null;
   chatgptUrl?: string;
   browserUrl?: string;
   browserChromeProfile?: string;
@@ -54,6 +55,10 @@ export function applyBrowserDefaultsFromConfig(
   const attachRunningRequested =
     options.browserAttachRunning === true ||
     (isUnset("browserAttachRunning") && browser.attachRunning === true);
+
+  if (isUnset("ownerLabel") && browser.ownerLabel !== undefined) {
+    options.ownerLabel = browser.ownerLabel;
+  }
 
   const configuredChatgptUrl = browser.chatgptUrl ?? browser.url;
   const cliChatgptSet = options.chatgptUrl !== undefined || options.browserUrl !== undefined;

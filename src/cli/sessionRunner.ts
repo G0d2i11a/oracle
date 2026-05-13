@@ -47,6 +47,11 @@ import { resumeBrowserSession } from "../browser/reattach.js";
 import { estimateTokenCount } from "../browser/utils.js";
 import type { BrowserLogger } from "../browser/types.js";
 import { formatElapsed } from "../oracle/format.js";
+import { deriveBrowserOwnerLabel, sanitizeBrowserOwnerLabel } from "../browser/ownerLabel.js";
+import type {
+  BrowserOwnerLabelResolution,
+  BrowserOwnerLabelSource,
+} from "../browser/ownerLabel.js";
 
 const isTty = process.stdout.isTTY;
 const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
@@ -65,11 +70,76 @@ export interface SessionRunParams {
   muteStdout?: boolean;
 }
 
+function resolveBrowserOwner({
+  browserConfig,
+  sessionMeta,
+  runOptions,
+  cwd,
+}: {
+  browserConfig?: BrowserSessionConfig;
+  sessionMeta: SessionMetadata;
+  runOptions: RunOracleOptions;
+  cwd: string;
+}): BrowserOwnerLabelResolution | null {
+  if (!browserConfig) {
+    return null;
+  }
+  const storedLabel = sanitizeBrowserOwnerLabel(browserConfig.ownerLabel);
+  if (storedLabel && browserConfig.ownerSource) {
+    return { label: storedLabel, source: browserConfig.ownerSource };
+  }
+  return deriveBrowserOwnerLabel({
+    explicit: storedLabel,
+    optionSlug: runOptions.slug ?? sessionMeta.options?.slug,
+    sessionId: runOptions.sessionId ?? sessionMeta.id,
+    cwd,
+    pid: process.pid,
+  });
+}
+
+function decorateBrowserRuntime(
+  runtime: BrowserRuntimeMetadata | undefined,
+  owner: BrowserOwnerLabelResolution | null,
+): BrowserRuntimeMetadata | undefined {
+  if (!runtime && !owner) {
+    return runtime;
+  }
+  return {
+    ...(runtime ?? {}),
+    ownerLabel: runtime?.ownerLabel ?? owner?.label,
+    ownerSource: runtime?.ownerSource ?? owner?.source,
+  };
+}
+
+function buildBrowserMetadata(
+  config: BrowserSessionConfig,
+  owner: BrowserOwnerLabelResolution | null,
+  runtime?: BrowserRuntimeMetadata,
+  extra?: Omit<
+    NonNullable<SessionMetadata["browser"]>,
+    "config" | "runtime" | "ownerLabel" | "ownerSource"
+  >,
+): NonNullable<SessionMetadata["browser"]> {
+  const decoratedRuntime = decorateBrowserRuntime(runtime, owner);
+  const ownerLabel = owner?.label ?? decoratedRuntime?.ownerLabel ?? config.ownerLabel ?? undefined;
+  const ownerSource =
+    owner?.source ??
+    decoratedRuntime?.ownerSource ??
+    (config.ownerSource as BrowserOwnerLabelSource | undefined);
+  return {
+    config,
+    ownerLabel,
+    ownerSource,
+    runtime: decoratedRuntime,
+    ...extra,
+  };
+}
+
 export async function performSessionRun({
   sessionMeta,
   runOptions,
   mode,
-  browserConfig,
+  browserConfig: inputBrowserConfig,
   cwd,
   log,
   write,
@@ -78,6 +148,20 @@ export async function performSessionRun({
   browserDeps,
   muteStdout = false,
 }: SessionRunParams): Promise<void> {
+  const browserOwner = resolveBrowserOwner({
+    browserConfig: inputBrowserConfig,
+    sessionMeta,
+    runOptions,
+    cwd,
+  });
+  const browserConfig =
+    inputBrowserConfig && browserOwner
+      ? {
+          ...inputBrowserConfig,
+          ownerLabel: browserOwner.label,
+          ownerSource: browserOwner.source,
+        }
+      : inputBrowserConfig;
   const writeInline = (chunk: string): boolean => {
     // Keep session logs intact while still echoing inline output to the user.
     write(chunk);
@@ -87,7 +171,7 @@ export async function performSessionRun({
     status: "running",
     startedAt: new Date().toISOString(),
     mode,
-    ...(browserConfig ? { browser: { config: browserConfig } } : {}),
+    ...(browserConfig ? { browser: buildBrowserMetadata(browserConfig, browserOwner) } : {}),
   });
   const notificationSettings =
     notifications ?? deriveNotificationSettingsFromMetadata(sessionMeta, process.env);
@@ -108,7 +192,7 @@ export async function performSessionRun({
         persistRuntimeHint: async (runtime: BrowserRuntimeMetadata) => {
           await sessionStore.updateSession(sessionMeta.id, {
             status: "running",
-            browser: { config: browserConfig, runtime },
+            browser: buildBrowserMetadata(browserConfig, browserOwner, runtime),
           });
         },
       };
@@ -134,11 +218,9 @@ export async function performSessionRun({
         usage: result.usage,
         elapsedMs: result.elapsedMs,
         errorMessage: undefined,
-        browser: {
-          config: browserConfig,
-          runtime: result.runtime,
+        browser: buildBrowserMetadata(browserConfig, browserOwner, result.runtime, {
           archive: result.archive,
-        },
+        }),
         artifacts: mergeArtifacts(sessionMeta.artifacts, result.artifacts),
         response: undefined,
         transport: undefined,
@@ -461,10 +543,13 @@ export async function performSessionRun({
         status: "running",
         errorMessage: message,
         mode,
-        browser: {
-          config: browserConfig,
-          runtime: runtime ?? sessionMeta.browser?.runtime,
-        },
+        browser: browserConfig
+          ? buildBrowserMetadata(
+              browserConfig,
+              browserOwner,
+              runtime ?? sessionMeta.browser?.runtime,
+            )
+          : undefined,
         response: { status: "running", incompleteReason: "chrome-disconnected" },
       });
       return;
@@ -490,10 +575,13 @@ export async function performSessionRun({
         completedAt: new Date().toISOString(),
         errorMessage: message,
         mode,
-        browser: {
-          config: browserConfig,
-          runtime: runtime ?? sessionMeta.browser?.runtime,
-        },
+        browser: browserConfig
+          ? buildBrowserMetadata(
+              browserConfig,
+              browserOwner,
+              runtime ?? sessionMeta.browser?.runtime,
+            )
+          : undefined,
         response: { status: "incomplete", incompleteReason: "incomplete-capture" },
         error: {
           category: userError.category,
@@ -553,10 +641,7 @@ export async function performSessionRun({
       errorMessage: message,
       mode,
       browser: browserConfig
-        ? {
-            config: browserConfig,
-            runtime: browserRuntime ?? undefined,
-          }
+        ? buildBrowserMetadata(browserConfig, browserOwner, browserRuntime ?? undefined)
         : undefined,
       response: responseMetadata,
       transport: transportMetadata,
@@ -673,6 +758,20 @@ async function autoReattachUntilComplete({
     log(dim("Auto-reattach disabled: missing runtime or browser config."));
     return false;
   }
+  const browserOwner = resolveBrowserOwner({
+    browserConfig,
+    sessionMeta,
+    runOptions,
+    cwd: sessionMeta.cwd ?? process.cwd(),
+  });
+  if (browserOwner) {
+    browserConfig = {
+      ...browserConfig,
+      ownerLabel: browserOwner.label,
+      ownerSource: browserOwner.source,
+    };
+    runtime = decorateBrowserRuntime(runtime, browserOwner) ?? runtime;
+  }
   const delayMs = Math.max(0, browserConfig.autoReattachDelayMs ?? 0);
   const intervalMs = Math.max(0, browserConfig.autoReattachIntervalMs ?? 0);
   if (intervalMs <= 0) {
@@ -757,10 +856,7 @@ async function autoReattachUntilComplete({
           totalTokens: outputTokens,
         },
         errorMessage: undefined,
-        browser: {
-          config: browserConfig,
-          runtime,
-        },
+        browser: buildBrowserMetadata(browserConfig, browserOwner, runtime),
         artifacts: mergeArtifacts(sessionMeta.artifacts, artifacts),
         response: { status: "completed" },
         error: undefined,

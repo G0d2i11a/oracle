@@ -18,6 +18,8 @@ export interface NotifyConfig {
 }
 
 export interface BrowserConfigDefaults {
+  /** Optional display/provenance label for browser runs. */
+  ownerLabel?: string | null;
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;
