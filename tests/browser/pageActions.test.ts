@@ -12,6 +12,7 @@ import {
 } from "../../src/browser/pageActions.js";
 import * as attachments from "../../src/browser/actions/attachments.js";
 import * as attachmentDataTransfer from "../../src/browser/actions/attachmentDataTransfer.js";
+import { buildResponseObserverExpressionForTest } from "../../src/browser/actions/assistantResponse.js";
 import type { ChromeClient } from "../../src/browser/types.js";
 
 const logger = vi.fn();
@@ -436,6 +437,16 @@ describe("waitForAssistantResponse", () => {
     expect(capturedExpression).not.toContain("document.querySelectorAll('.markdown')");
     expect(capturedExpression).toContain("data-message-author-role");
     expect(capturedExpression).toContain("role === 'assistant'");
+  });
+
+  test("observer settle does not treat completion buttons as final while Stop is active", () => {
+    const expression = buildResponseObserverExpressionForTest(30_000);
+    expect(expression).toContain(
+      "if (!activeProgress && (finishedVisible || stableCycles >= stableTarget))",
+    );
+    expect(expression).not.toContain(
+      "if (finishedVisible || (!activeProgress && stableCycles >= stableTarget))",
+    );
   });
 
   test("falls back to snapshot when observer fails", async () => {

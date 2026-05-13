@@ -324,6 +324,14 @@ export function buildCopyExpressionForTest(
   return buildCopyExpression(meta);
 }
 
+export function buildResponseObserverExpressionForTest(
+  timeoutMs: number,
+  minTurnIndex?: number,
+  expectedConversationId?: string,
+): string {
+  return buildResponseObserverExpression(timeoutMs, minTurnIndex, expectedConversationId);
+}
+
 async function recoverAssistantResponse(
   Runtime: ChromeClient["Runtime"],
   timeoutMs: number,
@@ -1012,7 +1020,7 @@ function buildResponseObserverExpression(
         const activeProgress = hasActiveProgress();
         const finishedVisible = isLastAssistantTurnFinished();
 
-        if (finishedVisible || (!activeProgress && stableCycles >= stableTarget)) {
+        if (!activeProgress && (finishedVisible || stableCycles >= stableTarget)) {
           break;
         }
       }

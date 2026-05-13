@@ -1,0 +1,142 @@
+{
+  "id": "oracle-browser-tab-lineage-opening-line",
+  "title": "Oracle Browser Multi-Tab Lineage, Owner Labels, and Assistant Opening-Line Harvest",
+  "description": "Add additive, backward-compatible browser provenance metadata and live ChatGPT tab harvest fields for the Oracle CLI repository. The implementation records a stable browser owner/agent label, keeps existing target/url/conversation matching intact, captures both first/opening and last assistant snippets, persists enriched harvest metadata, and displays lineage in oracle status --browser-tabs, oracle session <id> --harvest, and oracle session <id> --live.",
+  "integrationLane": "oracle-cli-browser-observability",
+  "writeSurface": [
+    "src/browser/ownerLabel.ts",
+    "src/sessionManager.ts",
+    "src/browser/types.ts",
+    "src/browser/config.ts",
+    "src/browser/sessionRunner.ts",
+    "src/browser/index.ts",
+    "src/browser/liveTabs.ts",
+    "src/cli/browserTabs.ts",
+    "tests/browser/ownerLabel.test.ts",
+    "tests/browser/liveTabs.test.ts",
+    "tests/cli/browserTabs.test.ts",
+    "tests/browser/config.test.ts"
+  ],
+  "conflictDomains": [
+    "browser-metadata-shape",
+    "legacy-meta-json-compatibility",
+    "chatgpt-dom-harvest",
+    "stop-button-active-state",
+    "browser-tab-matching",
+    "cli-status-formatting",
+    "remote-chrome-runtime-hints"
+  ],
+  "dependencies": [],
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Persist stable browser owner labels",
+      "description": "As a multi-agent operator, I can map each Oracle browser run to a stable owner/agent label without changing existing tab matching.",
+      "acceptanceCriteria": [
+        "Browser session metadata accepts optional browser.ownerLabel, browser.ownerSource, browser.runtime.ownerLabel, and browser.runtime.ownerSource fields.",
+        "Browser config accepts optional ownerLabel and derives a conservative default without requiring a new CLI flag.",
+        "Owner label resolution prefers explicit config, then env labels, then option/session slug, then cwd basename plus pid, then cwd basename, then pid, then session id.",
+        "Old meta.json files without owner fields continue to read and display without throwing.",
+        "Owner labels are provenance/display only and are not used as tab matching keys."
+      ]
+    },
+    {
+      "id": "US-002",
+      "title": "Capture first/opening and last assistant snippets",
+      "description": "As an operator inspecting live ChatGPT tabs, I can see both the opening assistant text and the latest assistant text.",
+      "acceptanceCriteria": [
+        "ChatGptTabSummary includes firstAssistantText, firstAssistantSnippet, openingLine, lastAssistantText, and lastAssistantSnippet.",
+        "Live tab inspection captures first/opening and last assistant snippets using current assistant-turn and answer fallback selectors.",
+        "Zero assistant turns produce empty first/opening/last assistant fields, not errors.",
+        "Existing target id, URL, and conversation id matching remains authoritative.",
+        "Stop-visible remains authoritative: if stopExists is true, active=yes and running state are preserved."
+      ]
+    },
+    {
+      "id": "US-003",
+      "title": "Persist enriched harvest metadata",
+      "description": "As an operator harvesting detached browser sessions, I can persist owner and opening-line metadata for later inspection.",
+      "acceptanceCriteria": [
+        "Harvest metadata persists ownerLabel, ownerSource, firstAssistantSnippet, openingLine, and lastAssistantSnippet under browser.harvest.",
+        "Harvest metadata remains backward-compatible with older browser.harvest objects.",
+        "Harvest output includes session id, owner when available, target id, conversation id, state, model, URL, assistant turn count, active/stop/send signals, opening/first snippet, last snippet, and last user snippet.",
+        "No eager metadata migration rewrites historical sessions."
+      ]
+    },
+    {
+      "id": "US-004",
+      "title": "Display tab lineage in status and live tail",
+      "description": "As an operator watching multiple concurrent ChatGPT tabs, I can identify which session/owner each tab belongs to and what the first/latest assistant content is.",
+      "acceptanceCriteria": [
+        "oracle status --browser-tabs displays target id, state, linked session id, owner when available, conversation id, active/stop/send signals, model, turn count, URL, opening/first snippet, and last snippet.",
+        "oracle session <id> --live status lines include session id, owner when available, target id, conversation id, state, active/stop/send signals, model, turn count, opening snippet, and last snippet.",
+        "Formatting remains compact and uses existing snippet truncation behavior.",
+        "Tests cover legacy owner fallback, harvest metadata shape, status-line provenance, and Stop-visible active behavior."
+      ]
+    }
+  ],
+  "acceptanceCriteria": [
+    "The implementation adds optional owner-label metadata without breaking old meta.json files.",
+    "The implementation captures and exposes first/opening and last assistant snippets for live ChatGPT tabs.",
+    "The implementation persists enriched harvest metadata through oracle session --harvest.",
+    "The implementation displays provenance and snippets through oracle status --browser-tabs and oracle session --live.",
+    "Stop-visible remains authoritative and active=yes behavior does not regress.",
+    "Focused tests pass for owner-label resolution, live tab extraction, CLI formatting, harvest persistence, config defaults, and legacy metadata compatibility.",
+    "pnpm run typecheck and pnpm run build pass."
+  ],
+  "nonGoals": [
+    "Do not require a new CLI flag for owner labels in v1.",
+    "Do not use owner labels as tab matching keys.",
+    "Do not eagerly migrate or rewrite historical metadata.",
+    "Do not change ChatGPT submission behavior, model selection, conversation archiving, or Answer Now handling.",
+    "Do not loosen the existing Stop-button active-state rule."
+  ],
+  "testCommands": [
+    "pnpm vitest run tests/browser/ownerLabel.test.ts tests/browser/liveTabs.test.ts tests/cli/browserTabs.test.ts tests/browser/config.test.ts",
+    "pnpm run typecheck",
+    "pnpm run build",
+    "pnpm test"
+  ],
+  "referenceImplementation": {
+    "status": "candidate_only",
+    "kind": "oracle_prd_and_patch_plan",
+    "artifactPath": "/Users/shawn/.ralph/artifacts/oracle/20260514-oracle-tab-lineage-opening-prd/oracle-response-tab-lineage-final.md",
+    "touchedFiles": [
+      "src/browser/ownerLabel.ts",
+      "src/sessionManager.ts",
+      "src/browser/types.ts",
+      "src/browser/config.ts",
+      "src/browser/sessionRunner.ts",
+      "src/browser/index.ts",
+      "src/browser/liveTabs.ts",
+      "src/cli/browserTabs.ts",
+      "tests/browser/ownerLabel.test.ts",
+      "tests/browser/liveTabs.test.ts",
+      "tests/cli/browserTabs.test.ts",
+      "tests/browser/config.test.ts"
+    ],
+    "applyInstructions": "Use Oracle's artifact as a candidate implementation and adapt it to the live repository. Do not blindly copy invalid JSON/code snippets; preserve the PRD acceptance criteria and existing repo patterns.",
+    "testCommands": [
+      "pnpm vitest run tests/browser/ownerLabel.test.ts tests/browser/liveTabs.test.ts tests/cli/browserTabs.test.ts tests/browser/config.test.ts",
+      "pnpm run typecheck",
+      "pnpm run build",
+      "pnpm test"
+    ],
+    "assumptions": [
+      "Owner labels are provenance-only.",
+      "OpeningLine is best-effort and derived from the first assistant turn.",
+      "Existing target/url/conversation matching remains the source of truth.",
+      "No new CLI flag is required for v1 because env/slug/session fallbacks are sufficient."
+    ],
+    "knownRisks": [
+      "ChatGPT DOM can flatten line breaks, so openingLine may equal the beginning of firstAssistantSnippet.",
+      "Remote and local browser paths must both propagate owner labels.",
+      "Status output can become noisy if snippets are not truncated."
+    ],
+    "rollbackNotes": [
+      "All schema additions are optional; rollback can remove owner/opening display and persistence without breaking old metadata.",
+      "If DOM extraction regresses, revert liveTabs extraction changes while preserving owner-label fallbacks.",
+      "If status output is too noisy, keep harvest persistence and reduce status detail lines."
+    ]
+  }
+}

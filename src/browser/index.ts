@@ -366,10 +366,136 @@ export interface BrowserConversationTurn {
   prompt?: string;
   answerText: string;
   answerMarkdown: string;
+  answerHtml?: string;
 }
 
 function normalizeBrowserFollowUpPrompts(values: string[] | undefined): string[] {
   return (values ?? []).map((entry) => entry.trim()).filter(Boolean);
+}
+
+function normalizePromiseGuardText(value: string): string {
+  return value
+    .replace(/\u2019/g, "'")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function promptRequestsConcreteDeliverable(prompt: string): boolean {
+  const normalized = normalizePromiseGuardText(prompt);
+  if (!normalized) return false;
+  return [
+    "no preamble",
+    "do not say what you will do",
+    "do not write what you will do",
+    "do not promise future work",
+    "first character",
+    "json only",
+    "actual complete deliverable",
+    "actual requested deliverable",
+    "complete deliverable",
+    "ralph-compatible prd",
+    "referenceimplementation",
+    "reference implementation",
+    "candidate implementation",
+    "patch bundle",
+    "patch-style",
+    "complete file-level edits",
+  ].some((marker) => normalized.includes(marker));
+}
+
+function promptRequestsJsonOnly(prompt: string): boolean {
+  const normalized = normalizePromiseGuardText(prompt);
+  return (
+    normalized.includes("json only") ||
+    (normalized.includes("first character") && normalized.includes("{"))
+  );
+}
+
+function responseHasConcreteDeliverableShape(answer: string): boolean {
+  const text = answer.trim();
+  if (text.length >= 1_200) return true;
+  return (
+    /^\s*\{[\s\S]*\}\s*$/.test(text) ||
+    /^#{1,4}\s+\S+/m.test(text) ||
+    /```/.test(text) ||
+    /"referenceImplementation"\s*:/.test(text) ||
+    /"userStories"\s*:/.test(text) ||
+    /\bacceptanceCriteria\b/.test(text) ||
+    /\btouchedFiles\b/.test(text)
+  );
+}
+
+function isPromiseOnlyAssistantResponse(answer: string): boolean {
+  const normalized = normalizePromiseGuardText(answer);
+  if (normalized.length < 20 || normalized.length > 700) return false;
+  if (responseHasConcreteDeliverableShape(answer)) return false;
+  return /^(i'll|i will|i am going to|i'm going to|i can)\s+(produce|provide|prepare|draft|write|return|deliver|generate|cover|include|ensure|keep|make|build|review|analyze|design|create|turn|convert)\b/.test(
+    normalized,
+  );
+}
+
+function isMalformedConcreteDeliverableResponse(prompt: string, answer: string): boolean {
+  const trimmed = answer.trim();
+  if (!trimmed || trimmed.length > 900) return false;
+  if (responseHasConcreteDeliverableShape(trimmed)) return false;
+  if (promptRequestsJsonOnly(prompt) && !trimmed.startsWith("{")) return true;
+  const normalized = normalizePromiseGuardText(trimmed);
+  return /^(the user wants|you asked|this requires|sure\b|here's what)\b/.test(normalized);
+}
+
+function isIncompleteRalphBundleResponse(prompt: string, answer: string): boolean {
+  const normalizedPrompt = normalizePromiseGuardText(prompt);
+  const requiresRalphBundle =
+    normalizedPrompt.includes("ralph-compatible prd") ||
+    normalizedPrompt.includes("referenceimplementation") ||
+    normalizedPrompt.includes("reference implementation") ||
+    normalizedPrompt.includes("candidate implementation") ||
+    normalizedPrompt.includes("touchedfiles");
+  if (!requiresRalphBundle) return false;
+  const normalizedAnswer = normalizePromiseGuardText(answer);
+  if (!normalizedAnswer || normalizedAnswer.length > 1_200) return false;
+  return !(
+    normalizedAnswer.includes("referenceimplementation") ||
+    normalizedAnswer.includes("reference implementation") ||
+    normalizedAnswer.includes("userstories") ||
+    normalizedAnswer.includes("user stories") ||
+    normalizedAnswer.includes("acceptancecriteria") ||
+    normalizedAnswer.includes("acceptance criteria") ||
+    normalizedAnswer.includes("touchedfiles") ||
+    normalizedAnswer.includes("touched files")
+  );
+}
+
+function shouldAutoContinuePromiseOnlyResponse(prompt: string, answer: string): boolean {
+  return (
+    promptRequestsConcreteDeliverable(prompt) &&
+    (isPromiseOnlyAssistantResponse(answer) ||
+      isMalformedConcreteDeliverableResponse(prompt, answer) ||
+      isIncompleteRalphBundleResponse(prompt, answer))
+  );
+}
+
+function buildPromiseOnlyContinuationPrompt(originalPrompt: string): string {
+  const normalized = normalizePromiseGuardText(originalPrompt);
+  const jsonOnly =
+    normalized.includes("json only") ||
+    (normalized.includes("first character") && normalized.includes("{"));
+  return [
+    "You returned only a promise/preamble instead of the requested deliverable.",
+    jsonOnly
+      ? 'Return the actual deliverable now as JSON only. The first character must be "{".'
+      : "Return the actual requested deliverable now.",
+    "Do not say what you will do. Do not include a preamble.",
+    "Use the full context already provided in this conversation.",
+  ].join("\n");
+}
+
+export function shouldAutoContinuePromiseOnlyResponseForTest(
+  prompt: string,
+  answer: string,
+): boolean {
+  return shouldAutoContinuePromiseOnlyResponse(prompt, answer);
 }
 
 export function formatBrowserTurnTranscript(turns: BrowserConversationTurn[]): {
@@ -1626,10 +1752,20 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       }
       const minAnswerChars = 16;
       if (turnAnswerText.trim().length > 0 && turnAnswerText.trim().length < minAnswerChars) {
-        const deadline = Date.now() + 12_000;
+        let deadline = Date.now() + 12_000;
         let bestText = turnAnswerText.trim();
         let stableCycles = 0;
-        while (Date.now() < deadline) {
+        logger(
+          "Assistant response is extremely short; waiting for Stop to disappear before finalizing.",
+        );
+        for (;;) {
+          if (Date.now() >= deadline) {
+            const stopVisible = await isBrowserStopButtonVisible(Runtime);
+            if (!stopVisible) {
+              break;
+            }
+            deadline = Date.now() + ACTIVE_RESPONSE_TIMEOUT_EXTENSION_MS;
+          }
           const snapshot = await readAssistantSnapshot(
             Runtime,
             baselineTurns ?? undefined,
@@ -1642,7 +1778,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           } else {
             stableCycles += 1;
           }
-          if (stableCycles >= 3 && bestText.length >= minAnswerChars) {
+          const stopVisible = await isBrowserStopButtonVisible(Runtime);
+          if (!stopVisible && stableCycles >= 3 && bestText.length >= minAnswerChars) {
             break;
           }
           await delay(400);
@@ -1653,6 +1790,25 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           turnAnswerMarkdown = bestText;
         }
       }
+      if (await isBrowserStopButtonVisible(Runtime)) {
+        logger("Stop button still visible after assistant capture; waiting for final response.");
+        const finalAnswer = await waitWithThinkingMonitor(() =>
+          raceWithDisconnect(
+            waitForAssistantResponseWithReload(
+              Runtime,
+              Page,
+              config.timeoutMs,
+              logger,
+              baselineTurns ?? undefined,
+              expectedConversationId(),
+            ),
+          ),
+        );
+        if (finalAnswer.text.trim().length >= turnAnswerText.trim().length) {
+          turnAnswerText = finalAnswer.text;
+          turnAnswerMarkdown = finalAnswer.text;
+        }
+      }
       return {
         label,
         answerText: turnAnswerText,
@@ -1661,16 +1817,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       };
     };
 
-    const turns: BrowserConversationTurn[] = [];
-    const initialTurn = await captureAssistantTurn(promptText, "Initial response");
-    turns.push(initialTurn);
-    answerText = initialTurn.answerText;
-    answerMarkdown = initialTurn.answerMarkdown;
-    answerHtml = initialTurn.answerHtml;
-
-    for (let index = 0; index < followUpPrompts.length; index += 1) {
-      const followUpPrompt = followUpPrompts[index];
-      logger(`[browser] Sending follow-up ${index + 1}/${followUpPrompts.length}`);
+    const submitFollowUpPrompt = async (followUpPrompt: string, logLabel: string) => {
+      logger(`[browser] Sending ${logLabel}`);
       await acquireProfileLockIfNeeded();
       try {
         await raceWithDisconnect(clearPromptComposer(Runtime, logger));
@@ -1692,11 +1840,67 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       } finally {
         await releaseProfileLockIfHeld();
       }
-      const turn = await captureAssistantTurn(followUpPrompt, `Follow-up ${index + 1}`);
+    };
+
+    const maybeContinuePromiseOnlyTurn = async (
+      turn: BrowserConversationTurn,
+      requestedPrompt: string,
+      label: string,
+    ): Promise<BrowserConversationTurn> => {
+      let currentTurn = turn;
+      let currentPrompt = requestedPrompt;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        if (
+          !shouldAutoContinuePromiseOnlyResponse(
+            currentPrompt,
+            currentTurn.answerMarkdown || currentTurn.answerText,
+          )
+        ) {
+          return currentTurn;
+        }
+        logger(
+          "[browser] Assistant returned an incomplete preamble; requesting the actual deliverable.",
+        );
+        const continuationPrompt = buildPromiseOnlyContinuationPrompt(currentPrompt);
+        await submitFollowUpPrompt(
+          continuationPrompt,
+          `${label} concrete-deliverable retry ${attempt}`,
+        );
+        currentTurn = await captureAssistantTurn(
+          continuationPrompt,
+          `${label} completion ${attempt}`,
+        );
+        currentPrompt = continuationPrompt;
+      }
+      return currentTurn;
+    };
+
+    const turns: BrowserConversationTurn[] = [];
+    const initialTurn = await maybeContinuePromiseOnlyTurn(
+      await captureAssistantTurn(promptText, "Initial response"),
+      promptText,
+      "Initial response",
+    );
+    turns.push(initialTurn);
+    answerText = initialTurn.answerText;
+    answerMarkdown = initialTurn.answerMarkdown;
+    answerHtml = initialTurn.answerHtml ?? "";
+
+    for (let index = 0; index < followUpPrompts.length; index += 1) {
+      const followUpPrompt = followUpPrompts[index];
+      await submitFollowUpPrompt(
+        followUpPrompt,
+        `follow-up ${index + 1}/${followUpPrompts.length}`,
+      );
+      const turn = await maybeContinuePromiseOnlyTurn(
+        await captureAssistantTurn(followUpPrompt, `Follow-up ${index + 1}`),
+        followUpPrompt,
+        `Follow-up ${index + 1}`,
+      );
       turns.push({ ...turn, prompt: followUpPrompt });
       answerText = turn.answerText;
       answerMarkdown = turn.answerMarkdown;
-      answerHtml = turn.answerHtml;
+      answerHtml = turn.answerHtml ?? "";
     }
 
     if (turns.length > 1) {
@@ -2939,16 +3143,8 @@ async function runRemoteBrowserMode(
     };
 
     const followUpPrompts = normalizeBrowserFollowUpPrompts(options.followUpPrompts);
-    const turns: BrowserConversationTurn[] = [];
-    const initialTurn = await captureAssistantTurn(promptText, "Initial response");
-    turns.push(initialTurn);
-    answerText = initialTurn.answerText;
-    answerMarkdown = initialTurn.answerMarkdown;
-    answerHtml = initialTurn.answerHtml;
-
-    for (let index = 0; index < followUpPrompts.length; index += 1) {
-      const followUpPrompt = followUpPrompts[index];
-      logger(`[browser] Sending follow-up ${index + 1}/${followUpPrompts.length}`);
+    const submitFollowUpPrompt = async (followUpPrompt: string, logLabel: string) => {
+      logger(`[browser] Sending ${logLabel}`);
       await clearPromptComposer(Runtime, logger);
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
       const submission = await runSubmissionWithRecovery({
@@ -2964,11 +3160,67 @@ async function runRemoteBrowserMode(
       });
       baselineTurns = submission.baselineTurns;
       baselineAssistantText = submission.baselineAssistantText;
-      const turn = await captureAssistantTurn(followUpPrompt, `Follow-up ${index + 1}`);
+    };
+
+    const maybeContinuePromiseOnlyTurn = async (
+      turn: BrowserConversationTurn,
+      requestedPrompt: string,
+      label: string,
+    ): Promise<BrowserConversationTurn> => {
+      let currentTurn = turn;
+      let currentPrompt = requestedPrompt;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        if (
+          !shouldAutoContinuePromiseOnlyResponse(
+            currentPrompt,
+            currentTurn.answerMarkdown || currentTurn.answerText,
+          )
+        ) {
+          return currentTurn;
+        }
+        logger(
+          "[browser] Assistant returned an incomplete preamble; requesting the actual deliverable.",
+        );
+        const continuationPrompt = buildPromiseOnlyContinuationPrompt(currentPrompt);
+        await submitFollowUpPrompt(
+          continuationPrompt,
+          `${label} concrete-deliverable retry ${attempt}`,
+        );
+        currentTurn = await captureAssistantTurn(
+          continuationPrompt,
+          `${label} completion ${attempt}`,
+        );
+        currentPrompt = continuationPrompt;
+      }
+      return currentTurn;
+    };
+
+    const turns: BrowserConversationTurn[] = [];
+    const initialTurn = await maybeContinuePromiseOnlyTurn(
+      await captureAssistantTurn(promptText, "Initial response"),
+      promptText,
+      "Initial response",
+    );
+    turns.push(initialTurn);
+    answerText = initialTurn.answerText;
+    answerMarkdown = initialTurn.answerMarkdown;
+    answerHtml = initialTurn.answerHtml ?? "";
+
+    for (let index = 0; index < followUpPrompts.length; index += 1) {
+      const followUpPrompt = followUpPrompts[index];
+      await submitFollowUpPrompt(
+        followUpPrompt,
+        `follow-up ${index + 1}/${followUpPrompts.length}`,
+      );
+      const turn = await maybeContinuePromiseOnlyTurn(
+        await captureAssistantTurn(followUpPrompt, `Follow-up ${index + 1}`),
+        followUpPrompt,
+        `Follow-up ${index + 1}`,
+      );
       turns.push({ ...turn, prompt: followUpPrompt });
       answerText = turn.answerText;
       answerMarkdown = turn.answerMarkdown;
-      answerHtml = turn.answerHtml;
+      answerHtml = turn.answerHtml ?? "";
     }
 
     if (turns.length > 1) {
@@ -3109,6 +3361,7 @@ export const __test__ = {
   isImageOnlyUiChromeText,
   listIgnoredRemoteChromeFlags,
   shouldCloseOwnedRunTargetAfterRun,
+  shouldAutoContinuePromiseOnlyResponse,
 };
 export { syncCookies } from "./cookies.js";
 export {

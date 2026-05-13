@@ -165,6 +165,56 @@ describe("formatBrowserTurnTranscript", () => {
   });
 });
 
+describe("promise-only browser answer guard", () => {
+  test("continues when a deliverable prompt only receives a promise preamble", () => {
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        "Return JSON only with a Ralph-compatible PRD and referenceImplementation. Do not say what you will do.",
+        "I’ll produce an implementable PRD and patch bundle covering metadata schema and tests.",
+      ),
+    ).toBe(true);
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        "Produce a Ralph-compatible PRD plus referenceImplementation for this repo.",
+        "I’ll turn the repo snapshot into a concrete PRD plus a patch-ready bundle, keeping metadata additive.",
+      ),
+    ).toBe(true);
+  });
+
+  test("continues when a JSON-only deliverable receives meta commentary", () => {
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        'Return JSON only. The first character of your next message must be "{".',
+        "The user wants the deliverable returned now as JSON only, beginning with the character `{`, s",
+      ),
+    ).toBe(true);
+  });
+
+  test("continues when a Ralph bundle response omits the required PRD/code sections", () => {
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        "Start with architecture, then provide a Ralph-compatible PRD with referenceImplementation, userStories, acceptanceCriteria, and touchedFiles.",
+        "Architecture recommendation: make ownership a derived, persisted browser-session concern.",
+      ),
+    ).toBe(true);
+  });
+
+  test("does not continue normal short answers or substantive deliverables", () => {
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        "Can you handle this later?",
+        "I’ll take care of that after the current run finishes.",
+      ),
+    ).toBe(false);
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        "Return JSON only with referenceImplementation.",
+        '{"prd":{"id":"x","userStories":[],"referenceImplementation":{"touchedFiles":[]}}}',
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("browser follow-ups", () => {
   test("rejects Deep Research follow-ups before launching Chrome", async () => {
     await expect(

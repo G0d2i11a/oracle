@@ -5,6 +5,7 @@ coverage
 npm-debug.log*
 .bun-check/
 .tmp/
+.ralph-cli-home/
 dist/
 build/
 *.tsbuildinfo

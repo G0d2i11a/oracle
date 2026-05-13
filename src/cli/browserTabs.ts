@@ -125,6 +125,42 @@ export function deriveLiveTailStateForTest(
   return deriveLiveTailState(harvested, unchangedSince, stallThresholdMs);
 }
 
+function isBrowserTabActive(
+  tab: Pick<
+    ChatGptTabSummary,
+    "state" | "stopExists" | "authenticated" | "sendExists" | "promptReady" | "assistantCount"
+  >,
+): boolean {
+  return tab.stopExists || formatBrowserTabState(tab) === "running";
+}
+
+export function isBrowserTabActiveForTest(
+  tab: Pick<
+    ChatGptTabSummary,
+    "state" | "stopExists" | "authenticated" | "sendExists" | "promptReady" | "assistantCount"
+  >,
+): boolean {
+  return isBrowserTabActive(tab);
+}
+
+function formatBrowserSignals(
+  tab: Pick<
+    ChatGptTabSummary,
+    "state" | "stopExists" | "authenticated" | "sendExists" | "promptReady" | "assistantCount"
+  >,
+): string {
+  return `active=${isBrowserTabActive(tab) ? "yes" : "no"} stop=${tab.stopExists ? "yes" : "no"} send=${tab.sendExists ? "yes" : "no"}`;
+}
+
+export function formatBrowserSignalsForTest(
+  tab: Pick<
+    ChatGptTabSummary,
+    "state" | "stopExists" | "authenticated" | "sendExists" | "promptReady" | "assistantCount"
+  >,
+): string {
+  return formatBrowserSignals(tab);
+}
+
 async function persistHarvest(
   sessionId: string,
   meta: SessionMetadata,
@@ -159,9 +195,7 @@ function printHarvestSummary(sessionId: string, harvested: ChatGptTabSummary): v
   console.log(`Model: ${harvested.currentModelLabel || "(unknown)"}`);
   console.log(`URL: ${harvested.url}`);
   console.log(`Assistant turns: ${harvested.assistantCount}`);
-  console.log(
-    `Signals: stop=${harvested.stopExists ? "yes" : "no"} send=${harvested.sendExists ? "yes" : "no"}`,
-  );
+  console.log(`Signals: ${formatBrowserSignals(harvested)}`);
   if (harvested.lastUserSnippet) {
     console.log(`Last user: ${harvested.lastUserSnippet}`);
   }
@@ -208,7 +242,7 @@ export async function showBrowserTabsStatus(): Promise<void> {
         metas,
       );
       console.log(
-        `- ${tab.targetId} ${formatBrowserTabState(tab)} model=${tab.currentModelLabel || "(unknown)"} turns=${tab.assistantCount} stop=${tab.stopExists ? "yes" : "no"} send=${tab.sendExists ? "yes" : "no"}`,
+        `- ${tab.targetId} ${formatBrowserTabState(tab)} ${formatBrowserSignals(tab)} model=${tab.currentModelLabel || "(unknown)"} turns=${tab.assistantCount}`,
       );
       console.log(`  title=${tab.title || "(untitled)"}`);
       console.log(`  url=${tab.url}`);
@@ -284,8 +318,8 @@ export async function liveTailSessionBrowserOutput(
       lastHash = hash;
       unchangedSince = Date.now();
       const statusLine =
-        `[${new Date().toISOString()}] state=${harvested.state} stop=${harvested.stopExists ? "yes" : "no"} ` +
-        `send=${harvested.sendExists ? "yes" : "no"} model=${harvested.currentModelLabel || "(unknown)"} ` +
+        `[${new Date().toISOString()}] state=${harvested.state} ${formatBrowserSignals(harvested)} ` +
+        `model=${harvested.currentModelLabel || "(unknown)"} ` +
         `snippet=${snippet(harvested.lastAssistantSnippet || fullText, 160)}`;
       console.log(statusLine);
       await persistHarvest(sessionId, meta, harvested);
