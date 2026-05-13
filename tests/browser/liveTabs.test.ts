@@ -1,7 +1,43 @@
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+
+const cdpMocks = vi.hoisted(() => {
+  const runtime = {
+    enable: vi.fn(async () => undefined),
+    evaluate: vi.fn(),
+  };
+  const dom = {
+    enable: vi.fn(async () => undefined),
+  };
+  const client = {
+    Runtime: runtime,
+    DOM: dom,
+    close: vi.fn(async () => undefined),
+  };
+  const connect = vi.fn(async () => client);
+  return {
+    runtime,
+    dom,
+    client,
+    connect,
+    list: vi.fn(),
+    newTarget: vi.fn(),
+  };
+});
+
+vi.mock("chrome-remote-interface", () => {
+  const connect = cdpMocks.connect;
+  return {
+    default: Object.assign(connect, {
+      List: cdpMocks.list,
+      New: cdpMocks.newTarget,
+    }),
+  };
+});
+
 import {
   classifyTabState,
   formatBrowserTabState,
+  inspectChatGptTab,
   resolveChatGptTabFromSummariesForTest,
   sessionMatchesTab,
   type ChatGptTabSummary,
@@ -20,6 +56,9 @@ function makeTab(overrides: Partial<ChatGptTabSummary> = {}): ChatGptTabSummary 
     loginButtonExists: false,
     authenticated: true,
     assistantCount: 1,
+    firstAssistantText: "Answer",
+    firstAssistantSnippet: "Answer",
+    openingLine: "Answer",
     lastAssistantText: "Answer",
     lastAssistantSnippet: "Answer",
     lastUserText: "Question",
@@ -35,6 +74,17 @@ function makeTab(overrides: Partial<ChatGptTabSummary> = {}): ChatGptTabSummary 
 }
 
 describe("liveTabs helpers", () => {
+  beforeEach(() => {
+    cdpMocks.runtime.enable.mockClear();
+    cdpMocks.runtime.evaluate.mockReset();
+    cdpMocks.dom.enable.mockClear();
+    cdpMocks.client.close.mockClear();
+    cdpMocks.connect.mockClear();
+    cdpMocks.connect.mockResolvedValue(cdpMocks.client);
+    cdpMocks.list.mockReset();
+    cdpMocks.newTarget.mockReset();
+  });
+
   test("classifies running/completed/detached states", () => {
     expect(
       classifyTabState({
@@ -63,6 +113,97 @@ describe("liveTabs helpers", () => {
         assistantCount: 0,
       }),
     ).toBe("detached");
+  });
+
+  test("inspects first/opening and last assistant snippets", async () => {
+    cdpMocks.runtime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            title: "ChatGPT",
+            url: "https://chatgpt.com/c/abc",
+            currentModelLabel: "ChatGPT",
+            stopExists: false,
+            sendExists: true,
+            promptReady: true,
+            loginButtonExists: false,
+            authenticated: true,
+            assistantCount: 2,
+            firstAssistantText: "Opening assistant line.\nMore detail follows.",
+            openingLine: "Opening assistant line.",
+            lastAssistantText: "Latest assistant text.",
+            lastUserText: "Latest user prompt.",
+            visibilityState: "visible",
+            focused: true,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            text: "Latest assistant text.\nSecond line.",
+            messageId: "message-2",
+            turnId: "turn-2",
+          },
+        },
+      });
+
+    const summary = await inspectChatGptTab({
+      target: {
+        targetId: "target-1",
+        type: "page",
+        title: "ChatGPT",
+        url: "https://chatgpt.com/c/abc",
+      },
+    });
+
+    expect(summary.firstAssistantText).toBe("Opening assistant line.\nMore detail follows.");
+    expect(summary.firstAssistantSnippet).toBe("Opening assistant line. More detail follows.");
+    expect(summary.openingLine).toBe("Opening assistant line.");
+    expect(summary.lastAssistantText).toBe("Latest assistant text.\nSecond line.");
+    expect(summary.lastAssistantSnippet).toBe("Latest assistant text. Second line.");
+    expect(summary.lastAssistantMessageId).toBe("message-2");
+    expect(summary.lastAssistantTurnId).toBe("turn-2");
+    expect(summary.state).toBe("completed");
+  });
+
+  test("inspects zero assistant turns with empty assistant fields", async () => {
+    cdpMocks.runtime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            title: "ChatGPT",
+            url: "https://chatgpt.com/",
+            currentModelLabel: "",
+            stopExists: false,
+            sendExists: false,
+            promptReady: false,
+            loginButtonExists: true,
+            authenticated: false,
+            assistantCount: 0,
+            visibilityState: "visible",
+            focused: false,
+          },
+        },
+      })
+      .mockResolvedValueOnce({ result: { value: null } });
+
+    const summary = await inspectChatGptTab({
+      target: {
+        targetId: "target-empty",
+        type: "page",
+        title: "ChatGPT",
+        url: "https://chatgpt.com/",
+      },
+    });
+
+    expect(summary.assistantCount).toBe(0);
+    expect(summary.firstAssistantText).toBe("");
+    expect(summary.firstAssistantSnippet).toBe("");
+    expect(summary.openingLine).toBe("");
+    expect(summary.lastAssistantText).toBe("");
+    expect(summary.lastAssistantSnippet).toBe("");
+    expect(summary.state).toBe("detached");
   });
 
   test("formats the stored state when present", () => {
@@ -106,6 +247,7 @@ describe("liveTabs helpers", () => {
       options: {},
       mode: "browser",
       browser: {
+        ownerLabel: "agent-a",
         runtime: {
           chromeHost: "127.0.0.1",
           chromePort: 9222,
@@ -123,6 +265,24 @@ describe("liveTabs helpers", () => {
         url: "https://chatgpt.com/c/abc",
         conversationId: "abc",
       }),
+    ).toBe(true);
+    expect(
+      sessionMatchesTab(
+        {
+          ...meta,
+          browser: {
+            ...meta.browser,
+            ownerLabel: "different-agent",
+          },
+        },
+        {
+          host: "127.0.0.1",
+          port: 9222,
+          targetId: "target-1",
+          url: "https://chatgpt.com/c/abc",
+          conversationId: "abc",
+        },
+      ),
     ).toBe(true);
     expect(
       sessionMatchesTab(meta, {

@@ -1,8 +1,34 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { buildBrowserConfig, resolveBrowserModelLabel } from "../../src/cli/browserConfig.js";
 
 describe("buildBrowserConfig", () => {
+  const ownerEnvKeys = [
+    "ORACLE_BROWSER_OWNER_LABEL",
+    "ORACLE_BROWSER_OWNER",
+    "ORACLE_OWNER_LABEL",
+    "ORACLE_AGENT_LABEL",
+    "ORACLE_AGENT_OWNER",
+    "RALPH_AGENT_LABEL",
+    "RALPH_AGENT_ID",
+    "CODEX_AGENT_LABEL",
+  ];
+  const originalOwnerEnv = new Map(ownerEnvKeys.map((key) => [key, process.env[key]]));
+
+  afterEach(() => {
+    for (const key of ownerEnvKeys) {
+      const original = originalOwnerEnv.get(key);
+      if (original === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original;
+      }
+    }
+  });
+
   test("uses defaults when optional flags omitted", async () => {
+    for (const key of ownerEnvKeys) {
+      delete process.env[key];
+    }
     const config = await buildBrowserConfig({ model: "gpt-5.5-pro" });
     expect(config).toMatchObject({
       chromeProfile: "Default",
@@ -20,6 +46,25 @@ describe("buildBrowserConfig", () => {
       allowCookieErrors: true,
       researchMode: "off",
       archiveConversations: undefined,
+    });
+    expect(config.ownerLabel).toMatch(new RegExp(`^[^:]+:pid-${process.pid}$`));
+    expect(config.ownerSource).toBe("cwd-pid");
+  });
+
+  test("prefers explicit and env owner labels before derived defaults", async () => {
+    for (const key of ownerEnvKeys) {
+      delete process.env[key];
+    }
+    process.env.ORACLE_BROWSER_OWNER_LABEL = "env worker";
+    await expect(buildBrowserConfig({ model: "gpt-5.5-pro" })).resolves.toMatchObject({
+      ownerLabel: "env-worker",
+      ownerSource: "env",
+    });
+    await expect(
+      buildBrowserConfig({ model: "gpt-5.5-pro", ownerLabel: "explicit worker" }),
+    ).resolves.toMatchObject({
+      ownerLabel: "explicit-worker",
+      ownerSource: "explicit",
     });
   });
 

@@ -61,6 +61,21 @@ function isDeepResearchBrowserSession(metadata: SessionMetadata): boolean {
   return metadata.mode === "browser" && metadata.browser?.config?.researchMode === "deep";
 }
 
+function resolveBrowserOwnerLabel(metadata: SessionMetadata): string | null {
+  if (metadata.mode !== "browser") {
+    return null;
+  }
+  return (
+    metadata.browser?.ownerLabel ??
+    metadata.browser?.runtime?.ownerLabel ??
+    metadata.browser?.config?.ownerLabel ??
+    metadata.options?.browserConfig?.ownerLabel ??
+    metadata.options?.slug ??
+    metadata.id ??
+    null
+  );
+}
+
 function isDeepResearchPlaceholderCapture(metadata: SessionMetadata, logText: string): boolean {
   const answer = trimBeforeFirstAnswer(logText)
     .replace(/^Answer:\s*/i, "")
@@ -271,6 +286,7 @@ export async function attachSession(
       (runtime?.controllerPid && !controllerAlive));
 
   if (canReattach) {
+    const reattachRuntime = runtime as NonNullable<typeof runtime>;
     const portInfo = runtime?.chromePort ? `port ${runtime.chromePort}` : "unknown port";
     const urlInfo = runtime?.tabUrl ? `url=${runtime.tabUrl}` : "url=unknown";
     console.log(
@@ -280,7 +296,7 @@ export async function attachSession(
     );
     try {
       const result = await resumeBrowserSession(
-        runtime as NonNullable<typeof runtime>,
+        reattachRuntime,
         metadata.browser?.config,
         Object.assign(
           ((message?: string) => {
@@ -323,8 +339,31 @@ export async function attachSession(
         },
         errorMessage: undefined,
         browser: {
+          ...metadata.browser,
           config: metadata.browser?.config,
-          runtime,
+          ownerLabel:
+            metadata.browser?.ownerLabel ??
+            reattachRuntime.ownerLabel ??
+            metadata.browser?.config?.ownerLabel ??
+            undefined,
+          ownerSource:
+            metadata.browser?.ownerSource ??
+            reattachRuntime.ownerSource ??
+            metadata.browser?.config?.ownerSource ??
+            undefined,
+          runtime: {
+            ...reattachRuntime,
+            ownerLabel:
+              reattachRuntime.ownerLabel ??
+              metadata.browser?.ownerLabel ??
+              metadata.browser?.config?.ownerLabel ??
+              undefined,
+            ownerSource:
+              reattachRuntime.ownerSource ??
+              metadata.browser?.ownerSource ??
+              metadata.browser?.config?.ownerSource ??
+              undefined,
+          },
         },
         artifacts,
         response: { status: "completed" },
@@ -381,6 +420,10 @@ export async function attachSession(
       }
     } else if (metadata.model) {
       console.log(`Model: ${metadata.model}`);
+    }
+    const browserOwner = resolveBrowserOwnerLabel(metadata);
+    if (browserOwner) {
+      console.log(dim(`Browser owner: ${browserOwner}`));
     }
     if (metadata.artifacts && metadata.artifacts.length > 0) {
       console.log("Artifacts:");

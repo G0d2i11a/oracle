@@ -227,6 +227,54 @@ describe("runBrowserSessionExecution", () => {
     });
   });
 
+  test("adds owner metadata to runtime hints and final runtime", async () => {
+    const persistRuntimeHint = vi.fn();
+    const executeBrowser = vi.fn(async (options) => {
+      await options.runtimeHintCb?.({ chromePort: 9222 });
+      return {
+        answerText: "ok",
+        answerMarkdown: "ok",
+        tookMs: 100,
+        answerTokens: 2,
+        answerChars: 2,
+        chromePort: 9222,
+      };
+    });
+
+    const result = await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, sessionId: "session-1" },
+        browserConfig: { ownerLabel: "worker one" },
+        cwd: "/repo",
+        log: vi.fn(),
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 10,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser,
+        persistRuntimeHint,
+      },
+    );
+
+    expect(persistRuntimeHint).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerLabel: "worker-one", ownerSource: "explicit" }),
+    );
+    expect(result.runtime).toMatchObject({
+      ownerLabel: "worker-one",
+      ownerSource: "explicit",
+      chromePort: 9222,
+    });
+  });
+
   test("suppresses automation noise when not verbose", async () => {
     const log = vi.fn();
     const noisyLogger = vi.fn();

@@ -120,6 +120,7 @@ interface CliOptions extends OptionValues {
   sessionId?: string;
   engine?: EngineMode;
   browser?: boolean;
+  ownerLabel?: string | null;
   timeout?: number | "auto";
   background?: boolean;
   httpTimeout?: number;

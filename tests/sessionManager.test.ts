@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdtemp, rm, readFile, stat } from "node:fs/promises";
+import { mkdtemp, rm, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -166,6 +166,56 @@ describe("session lifecycle", () => {
       first.id,
     );
     expect(restarted.id).toBe("alpha-beta-gamma-2");
+  });
+
+  test("initializeSession persists browser owner provenance metadata", async () => {
+    const meta = await sessionModule.initializeSession(
+      {
+        prompt: "Browser owned",
+        model: "gpt-5.2-pro",
+        mode: "browser",
+        browserConfig: { ownerLabel: " Agent A " },
+      },
+      "/tmp/cwd",
+    );
+    expect(meta.browser?.ownerLabel).toBe("Agent-A");
+    expect(meta.browser?.ownerSource).toBe("explicit");
+    expect(meta.browser?.config?.ownerLabel).toBe("Agent-A");
+    expect(meta.browser?.runtime?.ownerLabel).toBe("Agent-A");
+    expect(meta.browser?.runtime?.ownerSource).toBe("explicit");
+  });
+
+  test("does not eagerly rewrite legacy browser harvest metadata", async () => {
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Legacy harvest", model: "gpt-5.2-pro", mode: "browser" },
+      "/tmp/cwd",
+    );
+    const paths = await sessionModule.getSessionPaths(meta.id);
+    const legacyMeta: SessionMetadata = {
+      ...meta,
+      status: "completed",
+      browser: {
+        harvest: {
+          targetId: "legacy-target",
+          url: "https://chatgpt.com/c/legacy",
+          state: "completed",
+          assistantCount: 1,
+        },
+      },
+    };
+    await writeFile(paths.metadata, JSON.stringify(legacyMeta, null, 2), "utf8");
+    const before = await readFile(paths.metadata, "utf8");
+
+    const listed = await sessionModule.listSessionsMetadata();
+    const after = await readFile(paths.metadata, "utf8");
+
+    expect(listed.find((entry) => entry.id === meta.id)?.browser?.harvest).toMatchObject({
+      targetId: "legacy-target",
+      url: "https://chatgpt.com/c/legacy",
+      state: "completed",
+      assistantCount: 1,
+    });
+    expect(after).toBe(before);
   });
 
   test("marks stale running sessions as zombies after 60 minutes", async () => {

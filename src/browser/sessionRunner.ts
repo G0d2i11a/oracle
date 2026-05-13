@@ -17,6 +17,7 @@ import {
   saveBrowserTranscriptArtifact,
   saveDeepResearchReportArtifact,
 } from "./artifacts.js";
+import { deriveBrowserOwnerLabel, sanitizeBrowserOwnerLabel } from "./ownerLabel.js";
 
 export interface BrowserExecutionResult {
   usage: {
@@ -51,12 +52,30 @@ export async function runBrowserSessionExecution(
 ): Promise<BrowserExecutionResult> {
   const assemblePrompt = deps.assemblePrompt ?? assembleBrowserPrompt;
   const executeBrowser = deps.executeBrowser ?? runBrowserMode;
+  const presetOwnerLabel = sanitizeBrowserOwnerLabel(browserConfig.ownerLabel);
+  const browserOwner =
+    presetOwnerLabel && browserConfig.ownerSource
+      ? { label: presetOwnerLabel, source: browserConfig.ownerSource }
+      : deriveBrowserOwnerLabel({
+          explicit: presetOwnerLabel,
+          optionSlug: runOptions.slug,
+          sessionId: runOptions.sessionId,
+          cwd,
+          pid: process.pid,
+        });
+  const effectiveBrowserConfig: BrowserSessionConfig = browserOwner
+    ? {
+        ...browserConfig,
+        ownerLabel: browserOwner.label,
+        ownerSource: browserOwner.source,
+      }
+    : browserConfig;
   const promptArtifacts = await assemblePrompt(runOptions, { cwd });
   if (runOptions.verbose) {
     log(
       chalk.dim(
         `[verbose] Browser config: ${JSON.stringify({
-          ...browserConfig,
+          ...effectiveBrowserConfig,
         })}`,
       ),
     );
@@ -88,7 +107,7 @@ export async function runBrowserSessionExecution(
       ),
     );
   }
-  const displayModel = browserConfig.desiredModel?.trim() || runOptions.model;
+  const displayModel = effectiveBrowserConfig.desiredModel?.trim() || runOptions.model;
   const headerLine = `Launching browser mode (${displayModel}) with ~${promptArtifacts.estimatedInputTokens.toLocaleString()} tokens.`;
   const automationLogger: BrowserLogger = ((message?: string) => {
     if (typeof message !== "string") return;
@@ -120,7 +139,7 @@ export async function runBrowserSessionExecution(
             attachments: promptArtifacts.fallback.attachments,
           }
         : undefined,
-      config: browserConfig,
+      config: effectiveBrowserConfig,
       log: automationLogger,
       heartbeatIntervalMs: runOptions.heartbeatIntervalMs,
       verbose: runOptions.verbose,
@@ -131,6 +150,8 @@ export async function runBrowserSessionExecution(
       runtimeHintCb: async (runtime) => {
         await persistRuntimeHint({
           ...runtime,
+          ownerLabel: runtime.ownerLabel ?? browserOwner?.label,
+          ownerSource: runtime.ownerSource ?? browserOwner?.source,
           controllerPid: runtime.controllerPid ?? process.pid,
         });
       },
@@ -153,7 +174,7 @@ export async function runBrowserSessionExecution(
     prompt: promptArtifacts.composerText,
     answerMarkdown: answerText,
     conversationUrl: browserResult.tabUrl,
-    browserConfig,
+    browserConfig: effectiveBrowserConfig,
     existingArtifacts: browserResult.artifacts,
     logger: automationLogger,
   });
@@ -203,6 +224,8 @@ export async function runBrowserSessionExecution(
       tabUrl: browserResult.tabUrl,
       conversationId: browserResult.conversationId,
       controllerPid: browserResult.controllerPid ?? process.pid,
+      ownerLabel: browserResult.ownerLabel ?? browserOwner?.label,
+      ownerSource: browserResult.ownerSource ?? browserOwner?.source,
     },
     archive: browserResult.archive,
     answerText,

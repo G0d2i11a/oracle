@@ -502,6 +502,7 @@ async function askOracleFlow(version: string, userConfig: UserConfig): Promise<v
           browserKeepBrowser: answers.keepBrowser,
           browserModelLabel: resolveBrowserModelLabel(undefined, answers.model),
           model: answers.model,
+          slug: answers.slug,
         })
       : undefined;
 

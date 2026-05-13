@@ -11,6 +11,7 @@ import {
 } from "./tabLeaseRegistry.js";
 import type { BrowserAutomationConfig, ResolvedBrowserConfig } from "./types.js";
 import { isTemporaryChatUrl, normalizeChatgptUrl } from "./utils.js";
+import { sanitizeBrowserOwnerLabel } from "./ownerLabel.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -27,6 +28,8 @@ export const DEFAULT_CHATGPT_COOKIE_NAMES = [
 ];
 
 export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
+  ownerLabel: null,
+  ownerSource: null,
   chromeProfile: null,
   chromePath: null,
   chromeCookiePath: null,
@@ -154,6 +157,8 @@ export function resolveBrowserConfig(
       config?.remoteChromeBrowserWSEndpoint ?? DEFAULT_BROWSER_CONFIG.remoteChromeBrowserWSEndpoint,
     remoteChromeProfileRoot:
       config?.remoteChromeProfileRoot ?? DEFAULT_BROWSER_CONFIG.remoteChromeProfileRoot,
+    ownerLabel: sanitizeBrowserOwnerLabel(config?.ownerLabel) ?? DEFAULT_BROWSER_CONFIG.ownerLabel,
+    ownerSource: config?.ownerSource ?? DEFAULT_BROWSER_CONFIG.ownerSource,
     thinkingTime: config?.thinkingTime,
     researchMode,
     archiveConversations,

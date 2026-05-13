@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import chalk from "chalk";
 import { sessionStore } from "../sessionStore.js";
 import type { BrowserHarvestState, SessionMetadata } from "../sessionStore.js";
+import type { BrowserOwnerLabelSource } from "../browser/ownerLabel.js";
 import {
   collectChatGptTabs,
   DEFAULT_REMOTE_CHROME_HOST,
@@ -29,6 +30,11 @@ export interface BrowserLiveTailOptions {
   writeOutputPath?: string;
   browserTabRef?: string;
   stallThresholdMs?: number;
+}
+
+interface BrowserOwnerSummary {
+  label: string;
+  source: BrowserOwnerLabelSource;
 }
 
 function sessionBrowserEndpoint(
@@ -62,7 +68,9 @@ function collectUniqueEndpoints(metas: SessionMetadata[]): Array<{ host: string;
 
 function buildSessionIndex(metas: SessionMetadata[]): SessionMetadata[] {
   return metas
-    .filter((meta) => meta?.mode === "browser")
+    .filter(
+      (meta) => meta?.mode === "browser" || meta?.options?.mode === "browser" || meta?.browser,
+    )
     .sort((left, right) =>
       String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? "")),
     );
@@ -101,6 +109,46 @@ function resolveSessionTabRef(meta: SessionMetadata): string {
 
 export function resolveSessionTabRefForTest(meta: SessionMetadata): string {
   return resolveSessionTabRef(meta);
+}
+
+function resolveBrowserOwner(meta: SessionMetadata | null | undefined): BrowserOwnerSummary | null {
+  if (!meta || (meta.mode !== "browser" && meta.options?.mode !== "browser" && !meta.browser)) {
+    return null;
+  }
+  const candidates: Array<{ label: unknown; source: BrowserOwnerLabelSource }> = [
+    { label: meta.browser?.ownerLabel, source: meta.browser?.ownerSource ?? "explicit" },
+    {
+      label: meta.browser?.runtime?.ownerLabel,
+      source: meta.browser?.runtime?.ownerSource ?? "explicit",
+    },
+    {
+      label: meta.browser?.config?.ownerLabel,
+      source: meta.browser?.config?.ownerSource ?? "explicit",
+    },
+    {
+      label: meta.options?.browserConfig?.ownerLabel,
+      source: meta.options?.browserConfig?.ownerSource ?? "explicit",
+    },
+    { label: meta.options?.slug, source: "slug" },
+    { label: meta.id, source: "session-id" },
+  ];
+  for (const candidate of candidates) {
+    const label = String(candidate.label ?? "").trim();
+    if (label) {
+      return { label, source: candidate.source };
+    }
+  }
+  return null;
+}
+
+function resolveBrowserOwnerLabel(meta: SessionMetadata | null | undefined): string | null {
+  return resolveBrowserOwner(meta)?.label ?? null;
+}
+
+export function resolveBrowserOwnerLabelForTest(
+  meta: SessionMetadata | null | undefined,
+): string | null {
+  return resolveBrowserOwnerLabel(meta);
 }
 
 function deriveLiveTailState(
@@ -166,40 +214,177 @@ async function persistHarvest(
   meta: SessionMetadata,
   harvested: ChatGptTabSummary,
 ): Promise<void> {
+  const browser = buildHarvestBrowserMetadata(meta, harvested);
+  await sessionStore.updateSession(sessionId, { browser });
+}
+
+function buildHarvestBrowserMetadata(
+  meta: SessionMetadata,
+  harvested: ChatGptTabSummary,
+  harvestedAt = new Date(),
+): NonNullable<SessionMetadata["browser"]> {
   const hash = createHash("sha1")
     .update(harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "")
     .digest("hex");
-  const browser = {
+  const owner = resolveBrowserOwner(meta);
+  return {
     ...(meta.browser ?? {}),
     harvest: {
+      ...(meta.browser?.harvest ?? {}),
+      ...(owner ? { ownerLabel: owner.label, ownerSource: owner.source } : {}),
       targetId: harvested.targetId,
       url: harvested.url,
       conversationId: harvested.conversationId ?? extractConversationIdFromUrl(harvested.url),
-      harvestedAt: new Date().toISOString(),
+      harvestedAt: harvestedAt.toISOString(),
       assistantHash: hash,
       state: harvested.state,
       stopExists: harvested.stopExists,
       sendExists: harvested.sendExists,
       assistantCount: harvested.assistantCount,
       currentModelLabel: harvested.currentModelLabel,
+      firstAssistantSnippet: harvested.firstAssistantSnippet,
+      openingLine: harvested.openingLine,
       lastAssistantSnippet: harvested.lastAssistantSnippet,
+      lastUserSnippet: harvested.lastUserSnippet,
     },
   };
-  await sessionStore.updateSession(sessionId, { browser });
 }
 
-function printHarvestSummary(sessionId: string, harvested: ChatGptTabSummary): void {
-  console.log(chalk.bold(`Session: ${sessionId}`));
-  console.log(`Target: ${harvested.targetId}`);
-  console.log(`State: ${formatBrowserTabState(harvested)}`);
-  console.log(`Model: ${harvested.currentModelLabel || "(unknown)"}`);
-  console.log(`URL: ${harvested.url}`);
-  console.log(`Assistant turns: ${harvested.assistantCount}`);
-  console.log(`Signals: ${formatBrowserSignals(harvested)}`);
+export function buildHarvestBrowserMetadataForTest(
+  meta: SessionMetadata,
+  harvested: ChatGptTabSummary,
+  harvestedAt?: Date,
+): NonNullable<SessionMetadata["browser"]> {
+  return buildHarvestBrowserMetadata(meta, harvested, harvestedAt);
+}
+
+function formatHarvestSummaryLines(
+  sessionId: string,
+  harvested: ChatGptTabSummary,
+  owner: BrowserOwnerSummary | null,
+): string[] {
+  const lines = [`Session: ${sessionId}`];
+  if (owner) {
+    lines.push(`Owner: ${owner.label}`);
+  }
+  lines.push(`Target: ${harvested.targetId}`);
+  const conversationId = harvested.conversationId ?? extractConversationIdFromUrl(harvested.url);
+  if (conversationId) {
+    lines.push(`Conversation: ${conversationId}`);
+  }
+  lines.push(`State: ${formatBrowserTabState(harvested)}`);
+  lines.push(`Model: ${harvested.currentModelLabel || "(unknown)"}`);
+  lines.push(`URL: ${harvested.url}`);
+  lines.push(`Assistant turns: ${harvested.assistantCount}`);
+  lines.push(`Signals: ${formatBrowserSignals(harvested)}`);
+  if (harvested.openingLine || harvested.firstAssistantSnippet) {
+    lines.push(`Opening: ${snippet(harvested.openingLine || harvested.firstAssistantSnippet)}`);
+  }
+  if (harvested.lastAssistantSnippet) {
+    lines.push(`Last assistant: ${snippet(harvested.lastAssistantSnippet)}`);
+  }
   if (harvested.lastUserSnippet) {
-    console.log(`Last user: ${harvested.lastUserSnippet}`);
+    lines.push(`Last user: ${snippet(harvested.lastUserSnippet)}`);
+  }
+  return lines;
+}
+
+export function formatHarvestSummaryLinesForTest(
+  sessionId: string,
+  harvested: ChatGptTabSummary,
+  ownerLabel?: string | null,
+): string[] {
+  return formatHarvestSummaryLines(
+    sessionId,
+    harvested,
+    ownerLabel ? { label: ownerLabel, source: "explicit" } : null,
+  );
+}
+
+function printHarvestSummary(
+  sessionId: string,
+  harvested: ChatGptTabSummary,
+  owner: BrowserOwnerSummary | null,
+): void {
+  const lines = formatHarvestSummaryLines(sessionId, harvested, owner);
+  for (const [index, line] of lines.entries()) {
+    console.log(index === 0 ? chalk.bold(line) : line);
   }
   console.log(chalk.dim("---"));
+}
+
+function formatBrowserTabStatusLines(
+  tab: ChatGptTabSummary,
+  linkedSession: SessionMetadata | null,
+): string[] {
+  const lines = [
+    `- ${tab.targetId} ${formatBrowserTabState(tab)} ${formatBrowserSignals(tab)} model=${tab.currentModelLabel || "(unknown)"} turns=${tab.assistantCount}`,
+    `  title=${tab.title || "(untitled)"}`,
+    `  url=${tab.url}`,
+  ];
+  const conversationId = tab.conversationId ?? extractConversationIdFromUrl(tab.url);
+  if (conversationId) {
+    lines.push(`  conversation=${conversationId}`);
+  }
+  if (linkedSession) {
+    lines.push(`  session=${linkedSession.id}`);
+    const ownerLabel = resolveBrowserOwnerLabel(linkedSession);
+    if (ownerLabel) {
+      lines.push(`  owner=${ownerLabel}`);
+    }
+  }
+  if (tab.openingLine || tab.firstAssistantSnippet) {
+    lines.push(`  opening=${snippet(tab.openingLine || tab.firstAssistantSnippet)}`);
+  }
+  if (tab.lastAssistantSnippet) {
+    lines.push(`  last=${snippet(tab.lastAssistantSnippet)}`);
+  }
+  return lines;
+}
+
+export function formatBrowserTabStatusLinesForTest(
+  tab: ChatGptTabSummary,
+  linkedSession: SessionMetadata | null,
+): string[] {
+  return formatBrowserTabStatusLines(tab, linkedSession);
+}
+
+function formatLiveTailStatusLine(
+  sessionId: string,
+  meta: SessionMetadata,
+  harvested: ChatGptTabSummary,
+  timestamp = new Date(),
+  fullText = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "",
+): string {
+  const owner = resolveBrowserOwner(meta);
+  const conversationId = harvested.conversationId ?? extractConversationIdFromUrl(harvested.url);
+  const openingSnippet = snippet(harvested.openingLine || harvested.firstAssistantSnippet);
+  const lastSnippet = snippet(harvested.lastAssistantSnippet || fullText, 160);
+  return [
+    `[${timestamp.toISOString()}]`,
+    `session=${sessionId}`,
+    owner ? `owner=${owner.label}` : null,
+    `target=${harvested.targetId || "(unknown)"}`,
+    `conversation=${conversationId || "(unknown)"}`,
+    `state=${formatBrowserTabState(harvested)}`,
+    formatBrowserSignals(harvested),
+    `model=${harvested.currentModelLabel || "(unknown)"}`,
+    `turns=${harvested.assistantCount}`,
+    `opening=${openingSnippet || "(none)"}`,
+    `last=${lastSnippet || "(none)"}`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+export function formatLiveTailStatusLineForTest(
+  sessionId: string,
+  meta: SessionMetadata,
+  harvested: ChatGptTabSummary,
+  timestamp?: Date,
+  fullText?: string,
+): string {
+  return formatLiveTailStatusLine(sessionId, meta, harvested, timestamp, fullText);
 }
 
 async function maybeWriteHarvestOutput(
@@ -241,16 +426,8 @@ export async function showBrowserTabsStatus(): Promise<void> {
         { ...tab, host: endpoint.host, port: endpoint.port },
         metas,
       );
-      console.log(
-        `- ${tab.targetId} ${formatBrowserTabState(tab)} ${formatBrowserSignals(tab)} model=${tab.currentModelLabel || "(unknown)"} turns=${tab.assistantCount}`,
-      );
-      console.log(`  title=${tab.title || "(untitled)"}`);
-      console.log(`  url=${tab.url}`);
-      if (linkedSession) {
-        console.log(`  session=${linkedSession.id}`);
-      }
-      if (tab.lastAssistantSnippet) {
-        console.log(`  last=${snippet(tab.lastAssistantSnippet)}`);
+      for (const line of formatBrowserTabStatusLines(tab, linkedSession)) {
+        console.log(line);
       }
     }
   }
@@ -278,7 +455,7 @@ export async function harvestSessionBrowserOutput(
     stallWindowMs: options.stallWindowMs,
   });
   await persistHarvest(sessionId, meta, harvested);
-  printHarvestSummary(sessionId, harvested);
+  printHarvestSummary(sessionId, harvested, resolveBrowserOwner(meta));
   const output = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "";
   if (options.writeOutputPath) {
     await maybeWriteHarvestOutput(options.writeOutputPath, meta.cwd ?? process.cwd(), output);
@@ -317,10 +494,7 @@ export async function liveTailSessionBrowserOutput(
     if (hash !== lastHash) {
       lastHash = hash;
       unchangedSince = Date.now();
-      const statusLine =
-        `[${new Date().toISOString()}] state=${harvested.state} ${formatBrowserSignals(harvested)} ` +
-        `model=${harvested.currentModelLabel || "(unknown)"} ` +
-        `snippet=${snippet(harvested.lastAssistantSnippet || fullText, 160)}`;
+      const statusLine = formatLiveTailStatusLine(sessionId, meta, harvested, new Date(), fullText);
       console.log(statusLine);
       await persistHarvest(sessionId, meta, harvested);
     }
@@ -333,7 +507,7 @@ export async function liveTailSessionBrowserOutput(
         state: derivedState,
       };
       await persistHarvest(sessionId, meta, finalHarvest);
-      printHarvestSummary(sessionId, finalHarvest);
+      printHarvestSummary(sessionId, finalHarvest, resolveBrowserOwner(meta));
       const output = finalHarvest.lastAssistantMarkdown ?? finalHarvest.lastAssistantText ?? "";
       if (options.writeOutputPath) {
         await maybeWriteHarvestOutput(options.writeOutputPath, meta.cwd ?? process.cwd(), output);

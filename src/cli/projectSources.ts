@@ -108,9 +108,14 @@ export async function buildProjectSourcesBrowserConfig({
         envProfileDir ??
         null)
       : null;
+  const ownerLabel = configuredBrowser.ownerLabel ?? flagConfig.ownerLabel;
+  const ownerSource =
+    configuredBrowser.ownerLabel != null ? "explicit" : (flagConfig.ownerSource ?? undefined);
   return {
     ...configuredBrowser,
     ...flagConfig,
+    ownerLabel,
+    ownerSource,
     url: projectUrl,
     chatgptUrl: projectUrl,
     cookieSync: manualLogin ? false : (flagConfig.cookieSync ?? configuredBrowser.cookieSync),

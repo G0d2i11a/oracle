@@ -45,6 +45,9 @@ export interface ChatGptTabSummary {
   loginButtonExists: boolean;
   authenticated: boolean;
   assistantCount: number;
+  firstAssistantText: string;
+  firstAssistantSnippet: string;
+  openingLine: string;
   lastAssistantText: string;
   lastAssistantSnippet: string;
   lastUserText: string;
@@ -85,6 +88,18 @@ function trimToSnippet(text: string, max = 140): string {
     return normalized;
   }
   return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function firstNonEmptyLine(text: string): string {
+  for (const line of String(text ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")) {
+    const normalized = line.replace(/\s+/g, " ").trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return "";
 }
 
 function normalizeHostPort(input: HostPort = {}): Required<HostPort> {
@@ -155,6 +170,19 @@ function buildTabInspectionExpression(): string {
       ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
       const LOGIN_CTA = ${LOGIN_CTA_PATTERN.toString()};
       const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+      const readNodeText = (node) => {
+        const inner = typeof node?.innerText === 'string' ? node.innerText : '';
+        if (inner.trim().length > 0) return inner;
+        return String(node?.textContent ?? '');
+      };
+      const firstNonEmptyLine = (value) => {
+        const lines = String(value ?? '').replace(/\\r\\n?/g, '\\n').split('\\n');
+        for (const line of lines) {
+          const normalized = normalize(line);
+          if (normalized) return normalized;
+        }
+        return '';
+      };
       const isVisible = (node) => {
         if (!(node instanceof Element)) return false;
         const style = window.getComputedStyle(node);
@@ -223,14 +251,17 @@ function buildTabInspectionExpression(): string {
       if (currentModelLabel === 'ChatGPT' && hasProPill) {
         currentModelLabel = 'ChatGPT + Pro';
       }
-      const assistantTexts = assistantTurns
-        .map((node) => normalize(node.textContent))
-        .filter(Boolean);
+      const assistantRawTexts = assistantTurns.map(readNodeText).filter((text) => normalize(text));
+      const assistantTexts = assistantRawTexts.map(normalize).filter(Boolean);
       const userTexts = userTurns
-        .map((node) => normalize(node.textContent))
+        .map((node) => normalize(readNodeText(node)))
         .filter(Boolean);
-      const answerTexts = Array.from(answerNode || []).map((node) => normalize(node.textContent)).filter(Boolean);
+      const answerRawTexts = Array.from(answerNode || []).map(readNodeText).filter((text) => normalize(text));
+      const answerTexts = answerRawTexts.map(normalize).filter(Boolean);
       const assistantCount = assistantTurns.length > 0 ? assistantTurns.length : answerTexts.length;
+      const firstAssistantRawText = assistantRawTexts[0] || answerRawTexts[0] || '';
+      const firstAssistantText = String(firstAssistantRawText || '').trim();
+      const openingLine = firstNonEmptyLine(firstAssistantRawText);
       const lastAssistantText = assistantTexts[assistantTexts.length - 1] || answerTexts[answerTexts.length - 1] || '';
       const lastUserText = userTexts[userTexts.length - 1] || '';
       const authenticated = !loginButtonExists && (promptReady || sendExists || stopExists || assistantCount > 0);
@@ -244,12 +275,18 @@ function buildTabInspectionExpression(): string {
         loginButtonExists,
         authenticated,
         assistantCount,
+        firstAssistantText,
+        openingLine,
         lastAssistantText,
         lastUserText,
         visibilityState: document.visibilityState,
         focused: Boolean(document.hasFocus?.()),
       };
     })()`;
+}
+
+export function buildTabInspectionExpressionForTest(): string {
+  return buildTabInspectionExpression();
 }
 
 export async function listChatGptTargets(options: HostPort = {}): Promise<ChromeTarget[]> {
@@ -307,6 +344,8 @@ export async function inspectChatGptTab(
       loginButtonExists?: boolean;
       authenticated?: boolean;
       assistantCount?: number;
+      firstAssistantText?: string;
+      openingLine?: string;
       lastAssistantText?: string;
       lastUserText?: string;
       visibilityState?: string;
@@ -317,6 +356,9 @@ export async function inspectChatGptTab(
       typeof snapshot?.text === "string" && snapshot.text.trim().length > 0
         ? snapshot.text.trim()
         : String(info.lastAssistantText ?? "").trim();
+    const firstAssistantText = String(info.firstAssistantText ?? "").trim();
+    const openingLine =
+      String(info.openingLine ?? "").trim() || firstNonEmptyLine(firstAssistantText);
     const lastUserText = String(info.lastUserText ?? "").trim();
     const summary: ChatGptTabSummary = {
       host,
@@ -331,6 +373,9 @@ export async function inspectChatGptTab(
       loginButtonExists: Boolean(info.loginButtonExists),
       authenticated: Boolean(info.authenticated),
       assistantCount: Number.isFinite(info.assistantCount) ? Number(info.assistantCount) : 0,
+      firstAssistantText,
+      firstAssistantSnippet: trimToSnippet(firstAssistantText),
+      openingLine,
       lastAssistantText,
       lastAssistantSnippet: trimToSnippet(lastAssistantText),
       lastUserText,
@@ -393,6 +438,9 @@ export async function collectChatGptTabs(options: HostPort = {}): Promise<ChatGp
         loginButtonExists: false,
         authenticated: false,
         assistantCount: 0,
+        firstAssistantText: "",
+        firstAssistantSnippet: "",
+        openingLine: "",
         lastAssistantText: "",
         lastAssistantSnippet: "",
         lastUserText: "",

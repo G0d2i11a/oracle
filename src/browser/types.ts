@@ -3,6 +3,7 @@ import type Protocol from "devtools-protocol";
 import type { BrowserRuntimeMetadata } from "../sessionStore.js";
 import type { SessionArtifact } from "../sessionStore.js";
 import type { ThinkingTimeLevel } from "../oracle/types.js";
+import type { BrowserOwnerLabelSource } from "./ownerLabel.js";
 
 export type ChromeClient = Awaited<ReturnType<typeof CDP>>;
 export type CookieParam = Protocol.Network.CookieParam;
@@ -40,6 +41,8 @@ export interface SavedBrowserImage extends SessionArtifact {
 }
 
 export interface BrowserAutomationConfig {
+  ownerLabel?: string | null;
+  ownerSource?: BrowserOwnerLabelSource | null;
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;
@@ -129,6 +132,8 @@ export interface BrowserRunResult {
   answerText: string;
   answerMarkdown: string;
   answerHtml?: string;
+  ownerLabel?: string;
+  ownerSource?: BrowserOwnerLabelSource;
   artifacts?: SessionArtifact[];
   generatedImages?: BrowserGeneratedImage[];
   savedImages?: SavedBrowserImage[];
@@ -163,8 +168,12 @@ export type ResolvedBrowserConfig = Required<
     | "modelStrategy"
     | "maxConcurrentTabs"
     | "researchMode"
+    | "ownerLabel"
+    | "ownerSource"
   >
 > & {
+  ownerLabel: string | null;
+  ownerSource?: BrowserOwnerLabelSource | null;
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;

@@ -10,6 +10,13 @@ import type {
   BrowserResearchMode,
   CookieParam,
 } from "./browser/types.js";
+import {
+  deriveBrowserOwnerLabel,
+  sanitizeBrowserOwnerLabel,
+  type BrowserOwnerLabelInput,
+  type BrowserOwnerLabelResolution,
+  type BrowserOwnerLabelSource,
+} from "./browser/ownerLabel.js";
 import type {
   TransportFailureReason,
   AzureOptions,
@@ -23,6 +30,8 @@ import { getOracleHomeDir } from "./oracleHome.js";
 export type SessionMode = "api" | "browser";
 
 export interface BrowserSessionConfig {
+  ownerLabel?: string | null;
+  ownerSource?: BrowserOwnerLabelSource | null;
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;
@@ -74,6 +83,8 @@ export interface BrowserSessionConfig {
 }
 
 export interface BrowserRuntimeMetadata {
+  ownerLabel?: string;
+  ownerSource?: BrowserOwnerLabelSource;
   browserTransport?: "cdp";
   chromePid?: number;
   chromePort?: number;
@@ -91,6 +102,8 @@ export interface BrowserRuntimeMetadata {
 export type BrowserHarvestState = "running" | "completed" | "stalled" | "detached";
 
 export interface BrowserHarvestMetadata {
+  ownerLabel?: string;
+  ownerSource?: BrowserOwnerLabelSource;
   targetId?: string;
   url?: string;
   conversationId?: string;
@@ -101,10 +114,15 @@ export interface BrowserHarvestMetadata {
   sendExists?: boolean;
   assistantCount?: number;
   currentModelLabel?: string;
+  firstAssistantSnippet?: string;
+  openingLine?: string;
   lastAssistantSnippet?: string;
+  lastUserSnippet?: string;
 }
 
 export interface BrowserMetadata {
+  ownerLabel?: string;
+  ownerSource?: BrowserOwnerLabelSource;
   config?: BrowserSessionConfig;
   runtime?: BrowserRuntimeMetadata;
   harvest?: BrowserHarvestMetadata;
@@ -427,6 +445,46 @@ export async function readModelRunMetadata(
   return readModelRunFile(sessionId, model);
 }
 
+function resolveStoredBrowserOwner(
+  config: BrowserSessionConfig,
+): BrowserOwnerLabelResolution | null {
+  const label = sanitizeBrowserOwnerLabel(config.ownerLabel);
+  if (!label) {
+    return null;
+  }
+  if (config.ownerSource) {
+    return { label, source: config.ownerSource };
+  }
+  return { label, source: "explicit" };
+}
+
+function resolveBrowserOwnerForSessionConfig(
+  config: BrowserSessionConfig | undefined,
+  input: Omit<BrowserOwnerLabelInput, "explicit">,
+): { config?: BrowserSessionConfig; owner: BrowserOwnerLabelResolution | null } {
+  if (!config) {
+    return { config, owner: null };
+  }
+  const storedOwner = resolveStoredBrowserOwner(config);
+  const owner =
+    storedOwner ??
+    deriveBrowserOwnerLabel({
+      ...input,
+      explicit: config.ownerLabel,
+    });
+  if (!owner) {
+    return { config, owner: null };
+  }
+  return {
+    config: {
+      ...config,
+      ownerLabel: owner.label,
+      ownerSource: owner.source,
+    },
+    owner,
+  };
+}
+
 export async function initializeSession(
   options: InitializeSessionOptions,
   cwd: string,
@@ -440,7 +498,15 @@ export async function initializeSession(
   const dir = sessionDir(sessionId);
   await ensureDir(dir);
   const mode = options.mode ?? "api";
-  const browserConfig = options.browserConfig;
+  const { config: browserConfig, owner: browserOwner } = resolveBrowserOwnerForSessionConfig(
+    options.browserConfig,
+    {
+      optionSlug: options.slug,
+      sessionId,
+      cwd,
+      pid: process.pid,
+    },
+  );
   const modelList: ModelName[] =
     Array.isArray(options.models) && options.models.length > 0
       ? options.models
@@ -460,7 +526,20 @@ export async function initializeSession(
     })),
     cwd,
     mode,
-    browser: browserConfig ? { config: browserConfig } : undefined,
+    browser: browserConfig
+      ? {
+          config: browserConfig,
+          ownerLabel: browserOwner?.label,
+          ownerSource: browserOwner?.source,
+          runtime: browserOwner
+            ? {
+                ownerLabel: browserOwner.label,
+                ownerSource: browserOwner.source,
+                controllerPid: process.pid,
+              }
+            : undefined,
+        }
+      : undefined,
     notifications,
     options: {
       prompt: options.prompt,
