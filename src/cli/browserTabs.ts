@@ -93,6 +93,27 @@ function snippet(text: string, max = 120): string {
   return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+function isLowSignalAssistantSnippet(text: string | null | undefined): boolean {
+  const normalized = String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return !normalized || normalized.length <= 2 || normalized === "the";
+}
+
+function chooseAssistantSnippet(
+  primary: string | null | undefined,
+  fallback?: string | null,
+  max = 120,
+): string {
+  const primarySnippet = snippet(primary ?? "", max);
+  if (!isLowSignalAssistantSnippet(primarySnippet)) {
+    return primarySnippet;
+  }
+  const fallbackSnippet = snippet(fallback ?? "", max);
+  return isLowSignalAssistantSnippet(fallbackSnippet) ? "" : fallbackSnippet;
+}
+
 function resolveSessionTabRef(meta: SessionMetadata): string {
   const runtime = meta?.browser?.runtime ?? {};
   const harvest = meta?.browser?.harvest ?? {};
@@ -277,11 +298,15 @@ function formatHarvestSummaryLines(
   lines.push(`URL: ${harvested.url}`);
   lines.push(`Assistant turns: ${harvested.assistantCount}`);
   lines.push(`Signals: ${formatBrowserSignals(harvested)}`);
-  if (harvested.openingLine || harvested.firstAssistantSnippet) {
-    lines.push(`Opening: ${snippet(harvested.openingLine || harvested.firstAssistantSnippet)}`);
+  const openingSnippet = chooseAssistantSnippet(
+    harvested.openingLine || harvested.firstAssistantSnippet,
+  );
+  if (openingSnippet) {
+    lines.push(`Opening: ${openingSnippet}`);
   }
-  if (harvested.lastAssistantSnippet) {
-    lines.push(`Last assistant: ${snippet(harvested.lastAssistantSnippet)}`);
+  const lastAssistantSnippet = chooseAssistantSnippet(harvested.lastAssistantSnippet);
+  if (lastAssistantSnippet) {
+    lines.push(`Last assistant: ${lastAssistantSnippet}`);
   }
   if (harvested.lastUserSnippet) {
     lines.push(`Last user: ${snippet(harvested.lastUserSnippet)}`);
@@ -333,11 +358,20 @@ function formatBrowserTabStatusLines(
       lines.push(`  owner=${ownerLabel}`);
     }
   }
-  if (tab.openingLine || tab.firstAssistantSnippet) {
-    lines.push(`  opening=${snippet(tab.openingLine || tab.firstAssistantSnippet)}`);
+  const harvest = linkedSession?.browser?.harvest;
+  const openingSnippet = chooseAssistantSnippet(
+    tab.openingLine || tab.firstAssistantSnippet,
+    harvest?.openingLine || harvest?.firstAssistantSnippet,
+  );
+  if (openingSnippet) {
+    lines.push(`  opening=${openingSnippet}`);
   }
-  if (tab.lastAssistantSnippet) {
-    lines.push(`  last=${snippet(tab.lastAssistantSnippet)}`);
+  const lastAssistantSnippet = chooseAssistantSnippet(
+    tab.lastAssistantSnippet,
+    harvest?.lastAssistantSnippet,
+  );
+  if (lastAssistantSnippet) {
+    lines.push(`  last=${lastAssistantSnippet}`);
   }
   return lines;
 }
@@ -358,8 +392,10 @@ function formatLiveTailStatusLine(
 ): string {
   const owner = resolveBrowserOwner(meta);
   const conversationId = harvested.conversationId ?? extractConversationIdFromUrl(harvested.url);
-  const openingSnippet = snippet(harvested.openingLine || harvested.firstAssistantSnippet);
-  const lastSnippet = snippet(harvested.lastAssistantSnippet || fullText, 160);
+  const openingSnippet = chooseAssistantSnippet(
+    harvested.openingLine || harvested.firstAssistantSnippet,
+  );
+  const lastSnippet = chooseAssistantSnippet(harvested.lastAssistantSnippet, fullText, 160);
   return [
     `[${timestamp.toISOString()}]`,
     `session=${sessionId}`,

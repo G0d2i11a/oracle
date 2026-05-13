@@ -231,6 +231,51 @@ describe("browser tab CLI helpers", () => {
     ]);
   });
 
+  test("uses persisted harvest snippet when live tab snippet is only a tiny partial", () => {
+    const tab = {
+      targetId: "target-1",
+      title: "ChatGPT",
+      url: "https://chatgpt.com/c/conversation-1",
+      currentModelLabel: "GPT-5.5",
+      stopExists: false,
+      sendExists: true,
+      promptReady: true,
+      loginButtonExists: false,
+      authenticated: true,
+      assistantCount: 2,
+      firstAssistantText: "Opening line\nBody",
+      firstAssistantSnippet: "Opening line Body",
+      openingLine: "Opening line",
+      lastAssistantText: "I",
+      lastAssistantSnippet: "I",
+      lastUserText: "Last prompt",
+      lastUserSnippet: "Last prompt",
+      focused: true,
+      visibilityState: "visible",
+      fingerprint: "fp",
+      state: "completed",
+      lastAssistantMarkdown: null,
+    } as ChatGptTabSummary;
+    const linkedSession = {
+      id: "session-1",
+      createdAt: "2026-05-05T00:00:00.000Z",
+      status: "completed",
+      options: {},
+      mode: "browser",
+      browser: {
+        ownerLabel: "agent-a",
+        harvest: {
+          lastAssistantSnippet:
+            "According to the uploaded context, this is the complete assistant answer.",
+        },
+      },
+    } as SessionMetadata;
+
+    expect(formatBrowserTabStatusLinesForTest(tab, linkedSession)).toContain(
+      "  last=According to the uploaded context, this is the complete assistant answer.",
+    );
+  });
+
   test("formats live status lines with session provenance and snippets", () => {
     const meta = {
       id: "session-1",

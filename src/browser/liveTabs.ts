@@ -376,10 +376,15 @@ export async function inspectChatGptTab(
       focused?: boolean;
     };
     const snapshot = await readAssistantSnapshot(Runtime).catch(() => null);
-    const lastAssistantText =
+    const snapshotText =
       typeof snapshot?.text === "string" && snapshot.text.trim().length > 0
         ? snapshot.text.trim()
-        : String(info.lastAssistantText ?? "").trim();
+        : "";
+    const domLastAssistantText = String(info.lastAssistantText ?? "").trim();
+    const lastAssistantText =
+      snapshotText || domLastAssistantText
+        ? resolveAssistantSnippetText(snapshotText, domLastAssistantText)
+        : "";
     const firstAssistantText = String(info.firstAssistantText ?? "").trim();
     const openingLine =
       String(info.openingLine ?? "").trim() || firstNonEmptyLine(firstAssistantText);

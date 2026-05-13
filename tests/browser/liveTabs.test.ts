@@ -168,6 +168,58 @@ describe("liveTabs helpers", () => {
     expect(summary.state).toBe("completed");
   });
 
+  test("falls back to DOM text when assistant snapshot is only a tiny partial", async () => {
+    cdpMocks.runtime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            title: "ChatGPT",
+            url: "https://chatgpt.com/c/abc",
+            currentModelLabel: "ChatGPT",
+            stopExists: false,
+            sendExists: true,
+            promptReady: true,
+            loginButtonExists: false,
+            authenticated: true,
+            assistantCount: 2,
+            firstAssistantText: "Opening assistant line.",
+            openingLine: "Opening assistant line.",
+            lastAssistantText:
+              "According to the uploaded context, this is the complete assistant answer.",
+            lastUserText: "Latest user prompt.",
+            visibilityState: "visible",
+            focused: true,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            text: "I",
+            messageId: "message-2",
+            turnId: "turn-2",
+          },
+        },
+      });
+
+    const summary = await inspectChatGptTab({
+      target: {
+        targetId: "target-1",
+        type: "page",
+        title: "ChatGPT",
+        url: "https://chatgpt.com/c/abc",
+      },
+    });
+
+    expect(summary.lastAssistantText).toBe(
+      "According to the uploaded context, this is the complete assistant answer.",
+    );
+    expect(summary.lastAssistantSnippet).toBe(
+      "According to the uploaded context, this is the complete assistant answer.",
+    );
+    expect(summary.lastAssistantMessageId).toBe("message-2");
+  });
+
   test("inspects zero assistant turns with empty assistant fields", async () => {
     cdpMocks.runtime.evaluate
       .mockResolvedValueOnce({
