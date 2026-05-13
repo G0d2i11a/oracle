@@ -87,6 +87,30 @@ function trimToSnippet(text: string, max = 140): string {
   return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+function resolveAssistantSnippetText(text: string, markdown: string | null | undefined): string {
+  const normalizedText = String(text ?? "").trim();
+  const normalizedMarkdown = String(markdown ?? "").trim();
+  if (!normalizedMarkdown) {
+    return normalizedText;
+  }
+  if (!normalizedText) {
+    return normalizedMarkdown;
+  }
+  // Copy-button markdown is more reliable than the lightweight DOM snapshot.
+  // Completed ChatGPT tabs can expose a short UI/partial node such as "I".
+  if (normalizedMarkdown.length >= normalizedText.length + 20) {
+    return normalizedMarkdown;
+  }
+  return normalizedText;
+}
+
+export function resolveAssistantSnippetTextForTest(
+  text: string,
+  markdown: string | null | undefined,
+): string {
+  return resolveAssistantSnippetText(text, markdown);
+}
+
 function normalizeHostPort(input: HostPort = {}): Required<HostPort> {
   return {
     host: input.host ?? DEFAULT_REMOTE_CHROME_HOST,
@@ -513,7 +537,9 @@ export async function harvestChatGptTab(
     const harvested: ChatGptTabSummary = {
       ...nowSummary,
       lastAssistantText,
-      lastAssistantSnippet: trimToSnippet(lastAssistantText),
+      lastAssistantSnippet: trimToSnippet(
+        resolveAssistantSnippetText(lastAssistantText, assistantMarkdown),
+      ),
       lastAssistantMarkdown: assistantMarkdown ?? (lastAssistantText || null),
       lastAssistantMessageId:
         typeof snapshot?.messageId === "string"

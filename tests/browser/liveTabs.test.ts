@@ -3,6 +3,7 @@ import {
   classifyTabState,
   formatBrowserTabState,
   resolveChatGptTabFromSummariesForTest,
+  resolveAssistantSnippetTextForTest,
   sessionMatchesTab,
   type ChatGptTabSummary,
 } from "../../src/browser/liveTabs.js";
@@ -67,6 +68,18 @@ describe("liveTabs helpers", () => {
 
   test("formats the stored state when present", () => {
     expect(formatBrowserTabState(makeTab({ state: "stalled" }))).toBe("stalled");
+  });
+
+  test("prefers complete markdown over tiny snapshot snippets", () => {
+    expect(
+      resolveAssistantSnippetTextForTest(
+        "I",
+        "I will give the complete implementation notes here with enough detail to be useful.",
+      ),
+    ).toBe("I will give the complete implementation notes here with enough detail to be useful.");
+    expect(resolveAssistantSnippetTextForTest("Complete answer", "Complete answer")).toBe(
+      "Complete answer",
+    );
   });
 
   test("resolves current/id/url/title refs against live tabs", () => {
