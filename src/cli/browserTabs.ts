@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import chalk from "chalk";
 import { sessionStore } from "../sessionStore.js";
-import type { SessionMetadata } from "../sessionStore.js";
+import type { BrowserHarvestState, SessionMetadata } from "../sessionStore.js";
 import {
   collectChatGptTabs,
   DEFAULT_REMOTE_CHROME_HOST,
@@ -101,6 +101,28 @@ function resolveSessionTabRef(meta: SessionMetadata): string {
 
 export function resolveSessionTabRefForTest(meta: SessionMetadata): string {
   return resolveSessionTabRef(meta);
+}
+
+function deriveLiveTailState(
+  harvested: Pick<ChatGptTabSummary, "stopExists" | "authenticated">,
+  unchangedSince: number,
+  stallThresholdMs: number,
+): BrowserHarvestState {
+  if (harvested.stopExists) {
+    return "running";
+  }
+  if (harvested.authenticated) {
+    return "completed";
+  }
+  return Date.now() - unchangedSince >= stallThresholdMs ? "stalled" : "detached";
+}
+
+export function deriveLiveTailStateForTest(
+  harvested: Pick<ChatGptTabSummary, "stopExists" | "authenticated">,
+  unchangedSince: number,
+  stallThresholdMs: number,
+): BrowserHarvestState {
+  return deriveLiveTailState(harvested, unchangedSince, stallThresholdMs);
 }
 
 async function persistHarvest(
@@ -269,13 +291,7 @@ export async function liveTailSessionBrowserOutput(
       await persistHarvest(sessionId, meta, harvested);
     }
 
-    const derivedState = harvested.stopExists
-      ? Date.now() - unchangedSince >= stallThresholdMs
-        ? "stalled"
-        : "running"
-      : harvested.authenticated
-        ? "completed"
-        : "detached";
+    const derivedState = deriveLiveTailState(harvested, unchangedSince, stallThresholdMs);
 
     if (derivedState === "completed" || derivedState === "stalled" || derivedState === "detached") {
       const finalHarvest: ChatGptTabSummary = {

@@ -546,7 +546,7 @@ describe("waitForAssistantResponse", () => {
           if (params?.awaitPromise && expression.includes("MutationObserver")) {
             return new Promise(() => undefined);
           }
-          if (expression.includes("document.querySelectorAll(selectors.join(','))")) {
+          if (expression.includes("hasVisibleStopButton")) {
             return { result: { value: stopVisible } };
           }
           if (expression.includes("extractAssistantTurn")) {
@@ -582,6 +582,70 @@ describe("waitForAssistantResponse", () => {
     }
   });
 
+  test("does not return an evaluation candidate while Stop remains visible", async () => {
+    vi.useFakeTimers();
+    try {
+      let stopVisible = true;
+      let settled = false;
+      let snapshot = {
+        text: "I will inspect the source first.",
+        html: "<p>I will inspect the source first.</p>",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          const expression = String(params?.expression ?? "");
+          if (params?.awaitPromise && expression.includes("MutationObserver")) {
+            return {
+              result: {
+                type: "object",
+                value: {
+                  text: "I will inspect the source first.",
+                  html: "<p>I will inspect the source first.</p>",
+                  messageId: "mid",
+                  turnId: "tid",
+                },
+              },
+            };
+          }
+          if (expression.includes("hasVisibleStopButton")) {
+            return { result: { value: stopVisible } };
+          }
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: snapshot } };
+          }
+          if (expression.includes("lastAssistantTurn.querySelector")) {
+            return { result: { value: !stopVisible } };
+          }
+          return { result: { value: null } };
+        });
+      const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+
+      const promise = waitForAssistantResponse(runtime, 30_000, logger).then((result) => {
+        settled = true;
+        return result;
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(settled).toBe(false);
+
+      snapshot = {
+        text: "Final complete answer after generation stopped.",
+        html: "<p>Final complete answer after generation stopped.</p>",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      stopVisible = false;
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const result = await promise;
+      expect(result.text).toBe("Final complete answer after generation stopped.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("ignores Finalizing answer placeholder and waits for real text", async () => {
     vi.useFakeTimers();
     try {
@@ -609,7 +673,7 @@ describe("waitForAssistantResponse", () => {
               },
             };
           }
-          if (expression.includes("document.querySelectorAll(selectors.join(','))")) {
+          if (expression.includes("hasVisibleStopButton")) {
             return { result: { value: stopVisible } };
           }
           if (expression.includes("extractAssistantTurn")) {

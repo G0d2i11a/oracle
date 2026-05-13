@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { resolveSessionTabRefForTest } from "../../src/cli/browserTabs.js";
+import {
+  deriveLiveTailStateForTest,
+  resolveSessionTabRefForTest,
+} from "../../src/cli/browserTabs.js";
 import type { SessionMetadata } from "../../src/sessionStore.js";
 
 describe("browser tab CLI helpers", () => {
@@ -20,5 +23,12 @@ describe("browser tab CLI helpers", () => {
     } as SessionMetadata;
 
     expect(resolveSessionTabRefForTest(meta)).toBe("https://chatgpt.com/c/runtime-conversation");
+  });
+
+  test("keeps live tail running while Stop remains visible", () => {
+    const unchangedSince = Date.now() - 120_000;
+    expect(
+      deriveLiveTailStateForTest({ stopExists: true, authenticated: true }, unchangedSince, 60_000),
+    ).toBe("running");
   });
 });

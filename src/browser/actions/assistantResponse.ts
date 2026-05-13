@@ -204,19 +204,17 @@ export async function waitForAssistantResponse(
     expectedConversationId,
   );
   const candidate = refreshed ?? parsed;
-  if (isGeneratedImageAssistantAnswer(candidate)) {
+  const elapsedMs = Date.now() - start;
+  const remainingMs = Math.max(0, timeoutMs - elapsedMs);
+  const stopVisibleBeforeReturn = remainingMs > 0 ? await isStopButtonVisible(Runtime) : false;
+  if (isGeneratedImageAssistantAnswer(candidate) && !stopVisibleBeforeReturn) {
     logger("Captured assistant generated image response");
     return candidate;
   }
   // The evaluation path can race ahead of completion. If ChatGPT is still streaming, wait for the watchdog poller.
-  const elapsedMs = Date.now() - start;
-  const remainingMs = Math.max(0, timeoutMs - elapsedMs);
   if (remainingMs > 0) {
-    const [stopVisible, completionVisible] = await Promise.all([
-      isStopButtonVisible(Runtime),
-      isCompletionVisible(Runtime),
-    ]);
-    if (stopVisible) {
+    const completionVisible = await isCompletionVisible(Runtime);
+    if (stopVisibleBeforeReturn) {
       logger("Assistant still generating; waiting for completion");
       const completed = await pollAssistantCompletion(
         Runtime,
@@ -226,6 +224,18 @@ export async function waitForAssistantResponse(
       );
       if (completed) {
         return completed;
+      }
+      const stillActive = await isAssistantProgressActive(Runtime);
+      if (stillActive) {
+        throw new Error("assistant response still active after watchdog timeout");
+      }
+      const finalSnapshot = normalizeAssistantSnapshot(
+        await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId).catch(
+          () => null,
+        ),
+      );
+      if (finalSnapshot) {
+        return finalSnapshot;
       }
     } else if (completionVisible) {
       // No-op: completion UI surfaced and stop button is gone.
