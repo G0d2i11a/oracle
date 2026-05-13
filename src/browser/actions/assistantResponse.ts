@@ -214,8 +214,12 @@ export async function waitForAssistantResponse(
   // The evaluation path can race ahead of completion. If ChatGPT is still streaming, wait for the watchdog poller.
   if (remainingMs > 0) {
     const completionVisible = await isCompletionVisible(Runtime);
-    if (stopVisibleBeforeReturn) {
-      logger("Assistant still generating; waiting for completion");
+    if (stopVisibleBeforeReturn || !completionVisible) {
+      logger(
+        stopVisibleBeforeReturn
+          ? "Assistant still generating; waiting for completion"
+          : "Assistant completion UI not visible; waiting for stable completion",
+      );
       const completed = await pollAssistantCompletion(
         Runtime,
         remainingMs,

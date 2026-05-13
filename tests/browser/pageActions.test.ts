@@ -395,6 +395,9 @@ describe("waitForAssistantResponse", () => {
             }
             return { result: { value: payload } };
           }
+          if (expression.includes("lastAssistantTurn.querySelector")) {
+            return { result: { value: true } };
+          }
           return { result: { value: false } };
         });
 
@@ -641,6 +644,75 @@ describe("waitForAssistantResponse", () => {
 
       const result = await promise;
       expect(result.text).toBe("Final complete answer after generation stopped.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("does not return an early candidate before completion UI appears", async () => {
+    vi.useFakeTimers();
+    try {
+      let stopVisible = false;
+      let completionVisible = false;
+      let settled = false;
+      let snapshot = {
+        text: "I will produce a full implementation plan.",
+        html: "<p>I will produce a full implementation plan.</p>",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          const expression = String(params?.expression ?? "");
+          if (params?.awaitPromise && expression.includes("MutationObserver")) {
+            return {
+              result: {
+                type: "object",
+                value: {
+                  text: "I will produce a full implementation plan.",
+                  html: "<p>I will produce a full implementation plan.</p>",
+                  messageId: "mid",
+                  turnId: "tid",
+                },
+              },
+            };
+          }
+          if (expression.includes("hasVisibleStopButton")) {
+            return { result: { value: stopVisible } };
+          }
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: snapshot } };
+          }
+          if (expression.includes("lastAssistantTurn.querySelector")) {
+            return { result: { value: completionVisible } };
+          }
+          return { result: { value: null } };
+        });
+      const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+
+      const promise = waitForAssistantResponse(runtime, 30_000, logger).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+      stopVisible = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(settled).toBe(false);
+
+      snapshot = {
+        text: "Full implementation PRD with code skeletons and validation plan.",
+        html: "<p>Full implementation PRD with code skeletons and validation plan.</p>",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      stopVisible = false;
+      completionVisible = true;
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const result = await promise;
+      expect(result.text).toBe("Full implementation PRD with code skeletons and validation plan.");
     } finally {
       vi.useRealTimers();
     }
