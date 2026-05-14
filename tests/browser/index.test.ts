@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 import {
   __test__,
@@ -229,6 +230,22 @@ describe("promise-only browser answer guard", () => {
         '{"prd":{"id":"x","userStories":[],"referenceImplementation":{"touchedFiles":[]}}}',
       ),
     ).toBe(false);
+  });
+});
+
+describe("browser completion guard coverage", () => {
+  test("keeps stop-button finalization guards on both browser capture paths", () => {
+    const source = readFileSync(path.join(process.cwd(), "src/browser/index.ts"), "utf8");
+
+    expect(
+      source.match(
+        /Assistant response is extremely short; waiting for Stop to disappear before finalizing\./g,
+      )?.length,
+    ).toBe(2);
+    expect(
+      source.match(/Stop button still visible after assistant capture; waiting for final response\./g)
+        ?.length,
+    ).toBe(2);
   });
 });
 

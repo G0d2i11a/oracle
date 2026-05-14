@@ -3190,6 +3190,63 @@ async function runRemoteBrowserMode(
           turnAnswerMarkdown = bestText;
         }
       }
+      const minAnswerChars = 16;
+      if (turnAnswerText.trim().length > 0 && turnAnswerText.trim().length < minAnswerChars) {
+        let deadline = Date.now() + 12_000;
+        let bestText = turnAnswerText.trim();
+        let stableCycles = 0;
+        logger(
+          "Assistant response is extremely short; waiting for Stop to disappear before finalizing.",
+        );
+        for (;;) {
+          if (Date.now() >= deadline) {
+            const stopVisible = await isBrowserStopButtonVisible(Runtime);
+            if (!stopVisible) {
+              break;
+            }
+            deadline = Date.now() + ACTIVE_RESPONSE_TIMEOUT_EXTENSION_MS;
+          }
+          const snapshot = await readAssistantSnapshot(
+            Runtime,
+            baselineTurns ?? undefined,
+            expectedConversationId(),
+          ).catch(() => null);
+          const text = typeof snapshot?.text === "string" ? snapshot.text.trim() : "";
+          if (text && text.length > bestText.length) {
+            bestText = text;
+            stableCycles = 0;
+          } else {
+            stableCycles += 1;
+          }
+          const stopVisible = await isBrowserStopButtonVisible(Runtime);
+          if (!stopVisible && stableCycles >= 3 && bestText.length >= minAnswerChars) {
+            break;
+          }
+          await delay(400);
+        }
+        if (bestText.length > turnAnswerText.trim().length) {
+          logger("Refreshed short assistant response from latest DOM snapshot");
+          turnAnswerText = bestText;
+          turnAnswerMarkdown = bestText;
+        }
+      }
+      if (await isBrowserStopButtonVisible(Runtime)) {
+        logger("Stop button still visible after assistant capture; waiting for final response.");
+        const finalAnswer = await waitWithThinkingMonitor(() =>
+          waitForAssistantResponseWithReload(
+            Runtime,
+            Page,
+            config.timeoutMs,
+            logger,
+            baselineTurns ?? undefined,
+            expectedConversationId(),
+          ),
+        );
+        if (finalAnswer.text.trim().length >= turnAnswerText.trim().length) {
+          turnAnswerText = finalAnswer.text;
+          turnAnswerMarkdown = finalAnswer.text;
+        }
+      }
       return {
         label,
         answerText: turnAnswerText,
