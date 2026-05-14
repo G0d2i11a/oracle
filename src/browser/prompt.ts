@@ -168,7 +168,7 @@ export async function assembleBrowserPrompt(
   const shouldBundle = selectedPlan.shouldBundle;
   let bundleText: string | null = null;
   let bundled: { originalCount: number; bundlePath: string } | null = null;
-  if (shouldBundle) {
+  if (shouldBundle && sections.length > 0) {
     const bundle = await createBundledTextAttachment(sections);
     bundleText = bundle.text;
     attachments.length = 0;

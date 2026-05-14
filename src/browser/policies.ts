@@ -44,7 +44,8 @@ export function buildAttachmentPlan(
     displayPath: section.displayPath,
     sizeBytes: Buffer.byteLength(section.content, "utf8"),
   }));
-  const shouldBundle = bundleRequested || attachments.length > maxAttachments;
+  const shouldBundle =
+    attachments.length > 0 && (bundleRequested || attachments.length > maxAttachments);
 
   return {
     mode: shouldBundle ? "bundle" : "upload",

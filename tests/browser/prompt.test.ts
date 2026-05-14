@@ -137,6 +137,25 @@ describe("assembleBrowserPrompt", () => {
     expect(result.fallback).toBeNull();
   });
 
+  test("bundle flag does not create an empty upload when no files are attached", async () => {
+    const options = buildOptions({
+      prompt: "Continue the existing browser conversation.",
+      file: [],
+      browserAttachments: "always",
+    });
+    options.browserBundleFiles = true;
+
+    const result = await assembleBrowserPrompt(options, {
+      cwd: "/repo",
+      readFilesImpl: async () => [],
+    });
+
+    expect(result.attachmentMode).toBe("upload");
+    expect(result.attachments).toEqual([]);
+    expect(result.bundled).toBeNull();
+    expect(result.composerText).toBe("Continue the existing browser conversation.");
+  });
+
   test("always mode creates bundled fallback for multiple text uploads", async () => {
     const options = buildOptions({
       prompt: "Explain the bug",

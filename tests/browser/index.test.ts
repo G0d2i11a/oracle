@@ -197,6 +197,23 @@ describe("promise-only browser answer guard", () => {
         "Architecture recommendation: make ownership a derived, persisted browser-session concern.",
       ),
     ).toBe(true);
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        "Produce a Ralph-compatible PRD plus referenceImplementation with touchedFiles.",
+        "The user demands the actual requested deliverable immediately without any preamble or stat",
+      ),
+    ).toBe(true);
+  });
+
+  test("continuation prompt restates required Ralph bundle sections", () => {
+    const continuation = __test__.buildPromiseOnlyContinuationPromptForTest(
+      "Produce a Ralph-compatible PRD plus referenceImplementation with userStories, acceptanceCriteria, and touchedFiles.",
+    );
+
+    expect(continuation).toContain("Ralph handoff");
+    expect(continuation).toContain("Section C: Ralph-compatible PRD");
+    expect(continuation).toContain("Section D: referenceImplementation");
+    expect(continuation).toContain("Do not answer with a one-sentence gap statement");
   });
 
   test("does not continue normal short answers or substantive deliverables", () => {

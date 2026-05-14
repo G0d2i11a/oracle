@@ -444,14 +444,20 @@ function isMalformedConcreteDeliverableResponse(prompt: string, answer: string):
   return /^(the user wants|you asked|this requires|sure\b|here's what)\b/.test(normalized);
 }
 
-function isIncompleteRalphBundleResponse(prompt: string, answer: string): boolean {
+function promptRequiresRalphBundle(prompt: string): boolean {
   const normalizedPrompt = normalizePromiseGuardText(prompt);
-  const requiresRalphBundle =
+  return (
     normalizedPrompt.includes("ralph-compatible prd") ||
     normalizedPrompt.includes("referenceimplementation") ||
     normalizedPrompt.includes("reference implementation") ||
     normalizedPrompt.includes("candidate implementation") ||
-    normalizedPrompt.includes("touchedfiles");
+    normalizedPrompt.includes("touchedfiles") ||
+    normalizedPrompt.includes("touched files")
+  );
+}
+
+function isIncompleteRalphBundleResponse(prompt: string, answer: string): boolean {
+  const requiresRalphBundle = promptRequiresRalphBundle(prompt);
   if (!requiresRalphBundle) return false;
   const normalizedAnswer = normalizePromiseGuardText(answer);
   if (!normalizedAnswer || normalizedAnswer.length > 1_200) return false;
@@ -476,19 +482,53 @@ function shouldAutoContinuePromiseOnlyResponse(prompt: string, answer: string): 
   );
 }
 
+function throwIncompleteConcreteDeliverableError(
+  prompt: string,
+  answer: string,
+  label: string,
+): never {
+  const preview = answer.trim().replace(/\s+/g, " ").slice(0, 180);
+  throw new BrowserAutomationError(
+    "Assistant response remained incomplete after concrete-deliverable retries.",
+    {
+      stage: "assistant-response",
+      reason: "incomplete-concrete-deliverable",
+      label,
+      promptRequiresRalphBundle: promptRequiresRalphBundle(prompt),
+      answerPreview: preview,
+    },
+  );
+}
+
 function buildPromiseOnlyContinuationPrompt(originalPrompt: string): string {
   const normalized = normalizePromiseGuardText(originalPrompt);
   const jsonOnly =
     normalized.includes("json only") ||
     (normalized.includes("first character") && normalized.includes("{"));
-  return [
+  const lines = [
     "You returned only a promise/preamble instead of the requested deliverable.",
     jsonOnly
       ? 'Return the actual deliverable now as JSON only. The first character must be "{".'
       : "Return the actual requested deliverable now.",
     "Do not say what you will do. Do not include a preamble.",
     "Use the full context already provided in this conversation.",
-  ].join("\n");
+  ];
+
+  if (promptRequiresRalphBundle(originalPrompt)) {
+    lines.push(
+      "",
+      "This is a Ralph handoff. Your next answer must include the full PRD plus candidate implementation bundle, not a summary.",
+      "Required sections:",
+      "- Section A: verdict on the next implementation step and why.",
+      "- Section B: reference mapping table with the source/reference support.",
+      "- Section C: Ralph-compatible PRD with id, title, description, userStories, acceptanceCriteria, writeSurface, conflictDomains, dependencies, integrationLane, verification commands, rollback/safety notes, and non-goals.",
+      "- Section D: referenceImplementation with status=candidate_only, kind=patch_or_complete_files, touchedFiles, apply order, complete file contents or precise patch hunks, tests to add/update, test commands, assumptions, and known risks.",
+      "- Section E: validation plan and risks.",
+      "Do not answer with a one-sentence gap statement. Do not omit code for an implementable change.",
+    );
+  }
+
+  return lines.join("\n");
 }
 
 export function shouldAutoContinuePromiseOnlyResponseForTest(
@@ -496,6 +536,10 @@ export function shouldAutoContinuePromiseOnlyResponseForTest(
   answer: string,
 ): boolean {
   return shouldAutoContinuePromiseOnlyResponse(prompt, answer);
+}
+
+export function buildPromiseOnlyContinuationPromptForTest(prompt: string): string {
+  return buildPromiseOnlyContinuationPrompt(prompt);
 }
 
 export function formatBrowserTurnTranscript(turns: BrowserConversationTurn[]): {
@@ -1872,6 +1916,18 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         );
         currentPrompt = continuationPrompt;
       }
+      if (
+        shouldAutoContinuePromiseOnlyResponse(
+          currentPrompt,
+          currentTurn.answerMarkdown || currentTurn.answerText,
+        )
+      ) {
+        throwIncompleteConcreteDeliverableError(
+          currentPrompt,
+          currentTurn.answerMarkdown || currentTurn.answerText,
+          label,
+        );
+      }
       return currentTurn;
     };
 
@@ -3192,6 +3248,18 @@ async function runRemoteBrowserMode(
         );
         currentPrompt = continuationPrompt;
       }
+      if (
+        shouldAutoContinuePromiseOnlyResponse(
+          currentPrompt,
+          currentTurn.answerMarkdown || currentTurn.answerText,
+        )
+      ) {
+        throwIncompleteConcreteDeliverableError(
+          currentPrompt,
+          currentTurn.answerMarkdown || currentTurn.answerText,
+          label,
+        );
+      }
       return currentTurn;
     };
 
@@ -3362,6 +3430,7 @@ export const __test__ = {
   listIgnoredRemoteChromeFlags,
   shouldCloseOwnedRunTargetAfterRun,
   shouldAutoContinuePromiseOnlyResponse,
+  buildPromiseOnlyContinuationPromptForTest,
 };
 export { syncCookies } from "./cookies.js";
 export {
