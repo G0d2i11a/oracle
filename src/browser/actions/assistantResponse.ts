@@ -66,6 +66,56 @@ function isAssistantProgressOnlyText(normalized: string): boolean {
   );
 }
 
+function buildLastAssistantCompletionUiHelper(functionName: string): string {
+  return `
+    const TURN_ROOT_SELECTOR = 'article[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"]';
+    const isVisibleCompletionAction = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      if (node.closest('nav, aside, form, [data-testid*="sidebar"], [data-testid*="composer"]')) {
+        return false;
+      }
+      const rect = node.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+    };
+    const findLastAssistantTurnForCompletion = () => {
+      const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+      for (let i = turns.length - 1; i >= 0; i -= 1) {
+        if (isAssistantTurn(turns[i])) {
+          return turns[i];
+        }
+      }
+      return null;
+    };
+    const isCompletionActionNearAssistantTurn = (button, turn) => {
+      if (!(button instanceof HTMLElement) || !(turn instanceof HTMLElement)) return false;
+      if (!isVisibleCompletionAction(button)) return false;
+      if (turn.contains(button)) return true;
+      const turnRoot = turn.closest(TURN_ROOT_SELECTOR);
+      if (turnRoot?.contains(button)) return true;
+      const messageRoot = turn.closest('[data-message-id], [data-testid^="conversation-turn"]');
+      if (messageRoot?.contains(button)) return true;
+      const relation = turn.compareDocumentPosition(button);
+      if ((relation & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return false;
+      const turnRect = turn.getBoundingClientRect();
+      const actionRect = button.getBoundingClientRect();
+      if (!turnRect || !actionRect) return false;
+      return actionRect.top >= turnRect.top - 24 && actionRect.top <= turnRect.bottom + 260;
+    };
+    const ${functionName} = () => {
+      const lastAssistantTurn = findLastAssistantTurnForCompletion();
+      if (!lastAssistantTurn) return false;
+      const actionButtons = Array.from(document.querySelectorAll(FINISHED_SELECTOR));
+      if (actionButtons.some((button) => isCompletionActionNearAssistantTurn(button, lastAssistantTurn))) {
+        return true;
+      }
+      const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
+      return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
+    };
+  `;
+}
+
 export async function waitForAssistantResponse(
   Runtime: ChromeClient["Runtime"],
   timeoutMs: number,
@@ -600,6 +650,7 @@ async function isStopButtonVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
 
 async function isCompletionVisible(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
   try {
+    const completionHelper = buildLastAssistantCompletionUiHelper("hasLastAssistantCompletionUi");
     const { result } = await Runtime.evaluate({
       expression: `(() => {
         // Find the LAST assistant turn to check completion status
@@ -615,25 +666,10 @@ async function isCompletionVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
           if (testId.includes('assistant')) return true;
           return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
         };
-
-        const turns = Array.from(document.querySelectorAll('${CONVERSATION_TURN_SELECTOR}'));
-        let lastAssistantTurn = null;
-        for (let i = turns.length - 1; i >= 0; i--) {
-          if (isAssistantTurn(turns[i])) {
-            lastAssistantTurn = turns[i];
-            break;
-          }
-        }
-        if (!lastAssistantTurn) {
-          return false;
-        }
-        // Check if the last assistant turn has finished action buttons (copy, thumbs up/down, share)
-        if (lastAssistantTurn.querySelector('${FINISHED_ACTIONS_SELECTOR}')) {
-          return true;
-        }
-        // Also check for "Done" text in the last assistant turn's markdown
-        const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
-        return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
+        const CONVERSATION_SELECTOR = '${CONVERSATION_TURN_SELECTOR}';
+        const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
+        ${completionHelper}
+        return hasLastAssistantCompletionUi();
       })()`,
       returnByValue: true,
     });
@@ -830,6 +866,7 @@ function buildResponseObserverExpression(
     ${buildAssistantExtractor("extractFromTurns")}
     // Learned: some layouts (project view) render markdown without assistant turn wrappers.
     const extractFromMarkdownFallback = ${buildMarkdownFallbackExtractor("MIN_TURN_INDEX")};
+    ${buildLastAssistantCompletionUiHelper("isLastAssistantTurnFinished")}
 
 	    const acceptSnapshot = (snapshot) => {
 	      if (!snapshot) return null;
@@ -967,24 +1004,6 @@ function buildResponseObserverExpression(
 	        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 	        scheduleTimeout();
 	      });
-
-    // Check if the last assistant turn has finished (scoped to avoid detecting old turns).
-    const isLastAssistantTurnFinished = () => {
-      const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
-      let lastAssistantTurn = null;
-      for (let i = turns.length - 1; i >= 0; i--) {
-        if (isAssistantTurn(turns[i])) {
-          lastAssistantTurn = turns[i];
-          break;
-        }
-      }
-      if (!lastAssistantTurn) return false;
-      // Check for action buttons in this specific turn
-      if (lastAssistantTurn.querySelector(FINISHED_SELECTOR)) return true;
-      // Check for "Done" text in this turn's markdown
-      const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
-      return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
-    };
 
     const waitForSettle = async (snapshot) => {
       if (String(snapshot?.html ?? '').includes('/backend-api/estuary/content?id=file_')) {

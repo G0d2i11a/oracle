@@ -259,6 +259,24 @@ function buildTabInspectionExpression(): string {
         const role = normalize(turn.getAttribute('data-message-author-role') || turn.getAttribute('data-turn')).toLowerCase();
         return role === 'user';
       });
+      const isCompletionActionNearAssistantTurn = (button, turn) => {
+        if (!(button instanceof HTMLElement) || !(turn instanceof HTMLElement)) return false;
+        if (!isVisible(button)) return false;
+        if (button.closest('nav, aside, form, [data-testid*="sidebar"], [data-testid*="composer"]')) {
+          return false;
+        }
+        if (turn.contains(button)) return true;
+        const turnRoot = turn.closest('article[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"]');
+        if (turnRoot?.contains(button)) return true;
+        const messageRoot = turn.closest('[data-message-id], [data-testid^="conversation-turn"]');
+        if (messageRoot?.contains(button)) return true;
+        const relation = turn.compareDocumentPosition(button);
+        if ((relation & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return false;
+        const turnRect = turn.getBoundingClientRect();
+        const actionRect = button.getBoundingClientRect();
+        if (!turnRect || !actionRect) return false;
+        return actionRect.top >= turnRect.top - 24 && actionRect.top <= turnRect.bottom + 260;
+      };
       const hasThinkingIndicator = () => {
         const nodes = Array.from(
           document.querySelectorAll(
@@ -291,7 +309,10 @@ function buildTabInspectionExpression(): string {
       };
       const hasCompletionUi = () => {
         if (!lastAssistantTurn) return false;
-        if (lastAssistantTurn.querySelector(FINISHED_SELECTOR)) return true;
+        const actionButtons = Array.from(document.querySelectorAll(FINISHED_SELECTOR));
+        if (actionButtons.some((button) => isCompletionActionNearAssistantTurn(button, lastAssistantTurn))) {
+          return true;
+        }
         const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
         return Array.from(markdowns).some((node) => normalize(node.textContent) === 'Done');
       };

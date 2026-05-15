@@ -35,6 +35,7 @@ vi.mock("chrome-remote-interface", () => {
 });
 
 import {
+  buildTabInspectionExpressionForTest,
   classifyTabState,
   formatBrowserTabState,
   inspectChatGptTab,
@@ -122,6 +123,15 @@ describe("liveTabs helpers", () => {
         assistantCount: 0,
       }),
     ).toBe("detached");
+  });
+
+  test("status completion UI accepts finished actions near the latest assistant turn", () => {
+    const expression = buildTabInspectionExpressionForTest();
+    expect(expression).toContain("isCompletionActionNearAssistantTurn");
+    expect(expression).toContain("document.querySelectorAll(FINISHED_SELECTOR)");
+    expect(expression).toContain("turnRoot?.contains(button)");
+    expect(expression).toContain("Node.DOCUMENT_POSITION_FOLLOWING");
+    expect(expression).toContain("completionVisible");
   });
 
   test("inspects first/opening and last assistant snippets", async () => {

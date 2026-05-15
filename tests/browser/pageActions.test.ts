@@ -450,8 +450,10 @@ describe("waitForAssistantResponse", () => {
     expect(capturedExpression).toContain("copy-turn-action-button");
     expect(capturedExpression).toContain("reading documents");
     expect(capturedExpression).toContain("isLastAssistantTurnFinished");
-    expect(capturedExpression).toContain("lastAssistantTurn.querySelector(FINISHED_SELECTOR)");
-    expect(capturedExpression).not.toContain("document.querySelector(FINISHED_SELECTOR)");
+    expect(capturedExpression).toContain("isCompletionActionNearAssistantTurn");
+    expect(capturedExpression).toContain("document.querySelectorAll(FINISHED_SELECTOR)");
+    expect(capturedExpression).toContain("turnRoot?.contains(button)");
+    expect(capturedExpression).toContain("Node.DOCUMENT_POSITION_FOLLOWING");
     expect(capturedExpression).toContain("lastAssistantTurn.querySelectorAll('.markdown')");
     expect(capturedExpression).not.toContain("document.querySelectorAll('.markdown')");
     expect(capturedExpression).toContain("data-message-author-role");
