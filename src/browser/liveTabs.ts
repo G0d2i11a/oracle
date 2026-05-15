@@ -5,6 +5,7 @@ import {
   ANSWER_SELECTORS,
   ASSISTANT_ROLE_SELECTOR,
   CONVERSATION_TURN_SELECTOR,
+  FINISHED_ACTIONS_SELECTOR,
   INPUT_SELECTORS,
   MODEL_BUTTON_SELECTOR,
   SEND_BUTTON_SELECTORS,
@@ -40,6 +41,8 @@ export interface ChatGptTabSummary {
   url: string;
   currentModelLabel: string;
   stopExists: boolean;
+  thinkingActive: boolean;
+  completionVisible: boolean;
   sendExists: boolean;
   promptReady: boolean;
   loginButtonExists: boolean;
@@ -183,6 +186,7 @@ function buildTabInspectionExpression(): string {
   const answerSelectorsLiteral = JSON.stringify(ANSWER_SELECTORS);
   const turnSelectorLiteral = escapeLiteral(CONVERSATION_TURN_SELECTOR);
   const assistantRoleLiteral = escapeLiteral(ASSISTANT_ROLE_SELECTOR);
+  const finishedActionsLiteral = escapeLiteral(FINISHED_ACTIONS_SELECTOR);
   const modelButtonSelectorLiteral = escapeLiteral(MODEL_BUTTON_SELECTOR);
   return `(() => {
       const INPUT_SELECTORS = ${inputSelectorsLiteral};
@@ -190,10 +194,23 @@ function buildTabInspectionExpression(): string {
       const ANSWER_SELECTORS = ${answerSelectorsLiteral};
       const TURN_SELECTOR = ${turnSelectorLiteral};
       const ASSISTANT_ROLE_SELECTOR = ${assistantRoleLiteral};
+      const FINISHED_SELECTOR = ${finishedActionsLiteral};
       const MODEL_BUTTON_SELECTOR = ${modelButtonSelectorLiteral};
       ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
       const LOGIN_CTA = ${LOGIN_CTA_PATTERN.toString()};
       const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+      const normalizeLower = (value) => normalize(value).toLowerCase();
+      const isProgressOnlyText = (value) =>
+        [
+          'finalizing answer',
+          'finalising answer',
+          'thinking',
+          'pro thinking',
+          'reasoning',
+          'working',
+          'reading documents',
+          'reading document',
+        ].includes(normalizeLower(value));
       const readNodeText = (node) => {
         const inner = typeof node?.innerText === 'string' ? node.innerText : '';
         if (inner.trim().length > 0) return inner;
@@ -237,10 +254,47 @@ function buildTabInspectionExpression(): string {
         if (role === 'assistant') return true;
         return Boolean(turn.querySelector(ASSISTANT_ROLE_SELECTOR));
       });
+      const lastAssistantTurn = assistantTurns.length > 0 ? assistantTurns[assistantTurns.length - 1] : null;
       const userTurns = turns.filter((turn) => {
         const role = normalize(turn.getAttribute('data-message-author-role') || turn.getAttribute('data-turn')).toLowerCase();
         return role === 'user';
       });
+      const hasThinkingIndicator = () => {
+        const nodes = Array.from(
+          document.querySelectorAll(
+            [
+              '[data-testid*="thinking"]',
+              '[data-testid*="reasoning"]',
+              '[role="status"]',
+              '[aria-live="polite"]',
+              'span.loading-shimmer',
+            ].join(','),
+          ),
+        );
+        return nodes.some((node) => {
+          if (!isVisible(node)) return false;
+          const label = normalizeLower([
+            node.textContent,
+            node.getAttribute?.('aria-label'),
+            node.getAttribute?.('title'),
+            node.getAttribute?.('data-testid'),
+          ].filter(Boolean).join(' '));
+          return (
+            label.includes('thinking') ||
+            label.includes('reasoning') ||
+            label.includes('pro thinking') ||
+            label.includes('finalizing answer') ||
+            label.includes('finalising answer') ||
+            label.includes('reading documents')
+          );
+        });
+      };
+      const hasCompletionUi = () => {
+        if (!lastAssistantTurn) return false;
+        if (lastAssistantTurn.querySelector(FINISHED_SELECTOR)) return true;
+        const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
+        return Array.from(markdowns).some((node) => normalize(node.textContent) === 'Done');
+      };
       const answerNode = ANSWER_SELECTORS
         .map((selector) => document.querySelectorAll(selector))
         .find((matches) => matches && matches.length > 0);
@@ -288,12 +342,16 @@ function buildTabInspectionExpression(): string {
       const openingLine = firstNonEmptyLine(firstAssistantRawText);
       const lastAssistantText = assistantTexts[assistantTexts.length - 1] || answerTexts[answerTexts.length - 1] || '';
       const lastUserText = userTexts[userTexts.length - 1] || '';
+      const thinkingActive = stopExists || isProgressOnlyText(lastAssistantText) || hasThinkingIndicator();
+      const completionVisible = hasCompletionUi();
       const authenticated = !loginButtonExists && (promptReady || sendExists || stopExists || assistantCount > 0);
       return {
         title: normalize(document.title),
         url: location.href,
         currentModelLabel,
         stopExists,
+        thinkingActive,
+        completionVisible,
         sendExists,
         promptReady,
         loginButtonExists,
@@ -363,6 +421,8 @@ export async function inspectChatGptTab(
       url?: string;
       currentModelLabel?: string;
       stopExists?: boolean;
+      thinkingActive?: boolean;
+      completionVisible?: boolean;
       sendExists?: boolean;
       promptReady?: boolean;
       loginButtonExists?: boolean;
@@ -397,6 +457,8 @@ export async function inspectChatGptTab(
       url: normalizeUrl(info.url ?? target.url ?? ""),
       currentModelLabel: normalizeTitle(info.currentModelLabel ?? ""),
       stopExists: Boolean(info.stopExists),
+      thinkingActive: Boolean(info.thinkingActive),
+      completionVisible: Boolean(info.completionVisible),
       sendExists: Boolean(info.sendExists),
       promptReady: Boolean(info.promptReady),
       loginButtonExists: Boolean(info.loginButtonExists),
@@ -430,13 +492,19 @@ export async function inspectChatGptTab(
 export function classifyTabState(
   summary: Pick<
     ChatGptTabSummary,
-    "authenticated" | "stopExists" | "sendExists" | "promptReady" | "assistantCount"
+    | "authenticated"
+    | "stopExists"
+    | "thinkingActive"
+    | "completionVisible"
+    | "sendExists"
+    | "promptReady"
+    | "assistantCount"
   >,
 ): BrowserHarvestState {
   if (!summary?.authenticated) {
     return "detached";
   }
-  if (summary.stopExists) {
+  if (summary.stopExists || summary.thinkingActive) {
     return "running";
   }
   if (summary.sendExists || summary.promptReady || summary.assistantCount > 0) {
@@ -462,6 +530,8 @@ export async function collectChatGptTabs(options: HostPort = {}): Promise<ChatGp
         url: normalizeUrl(target.url ?? ""),
         currentModelLabel: "",
         stopExists: false,
+        thinkingActive: false,
+        completionVisible: false,
         sendExists: false,
         promptReady: false,
         loginButtonExists: false,
@@ -589,6 +659,7 @@ export async function harvestChatGptTab(
     });
     const harvested: ChatGptTabSummary = {
       ...nowSummary,
+      completionVisible: nowSummary.completionVisible || Boolean(assistantMarkdown),
       lastAssistantText,
       lastAssistantSnippet: trimToSnippet(
         resolveAssistantSnippetText(lastAssistantText, assistantMarkdown),
@@ -601,7 +672,11 @@ export async function harvestChatGptTab(
       lastAssistantTurnId:
         typeof snapshot?.turnId === "string" ? snapshot.turnId : nowSummary.lastAssistantTurnId,
     };
-    if (harvested.stopExists && options.stallWindowMs && options.stallWindowMs > 0) {
+    if (
+      (harvested.stopExists || harvested.thinkingActive) &&
+      options.stallWindowMs &&
+      options.stallWindowMs > 0
+    ) {
       const firstFingerprint = harvested.fingerprint;
       await delay(options.stallWindowMs);
       const followup = await inspectChatGptTab({
@@ -615,6 +690,8 @@ export async function harvestChatGptTab(
         },
       });
       harvested.stopExists = followup.stopExists;
+      harvested.thinkingActive = followup.thinkingActive;
+      harvested.completionVisible = followup.completionVisible;
       harvested.sendExists = followup.sendExists;
       harvested.promptReady = followup.promptReady;
       harvested.currentModelLabel = followup.currentModelLabel;
@@ -627,7 +704,8 @@ export async function harvestChatGptTab(
       harvested.lastUserSnippet = followup.lastUserSnippet;
       harvested.fingerprint = followup.fingerprint;
       harvested.state =
-        harvested.stopExists && firstFingerprint === followup.fingerprint
+        (harvested.stopExists || harvested.thinkingActive) &&
+        firstFingerprint === followup.fingerprint
           ? "stalled"
           : classifyTabState(harvested);
     } else {
@@ -647,7 +725,14 @@ export function extractConversationIdFromUrl(url: string): string | undefined {
 export function formatBrowserTabState(
   tab: Pick<
     ChatGptTabSummary,
-    "state" | "authenticated" | "stopExists" | "sendExists" | "promptReady" | "assistantCount"
+    | "state"
+    | "authenticated"
+    | "stopExists"
+    | "thinkingActive"
+    | "completionVisible"
+    | "sendExists"
+    | "promptReady"
+    | "assistantCount"
   >,
 ): BrowserHarvestState {
   return tab.state ?? classifyTabState(tab);

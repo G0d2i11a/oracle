@@ -173,21 +173,27 @@ export function resolveBrowserOwnerLabelForTest(
 }
 
 function deriveLiveTailState(
-  harvested: Pick<ChatGptTabSummary, "stopExists" | "authenticated">,
+  harvested: Pick<
+    ChatGptTabSummary,
+    "stopExists" | "thinkingActive" | "completionVisible" | "authenticated"
+  >,
   unchangedSince: number,
   stallThresholdMs: number,
 ): BrowserHarvestState {
-  if (harvested.stopExists) {
+  if (harvested.stopExists || harvested.thinkingActive) {
     return "running";
   }
-  if (harvested.authenticated) {
+  if (harvested.authenticated && harvested.completionVisible) {
     return "completed";
   }
   return Date.now() - unchangedSince >= stallThresholdMs ? "stalled" : "detached";
 }
 
 export function deriveLiveTailStateForTest(
-  harvested: Pick<ChatGptTabSummary, "stopExists" | "authenticated">,
+  harvested: Pick<
+    ChatGptTabSummary,
+    "stopExists" | "thinkingActive" | "completionVisible" | "authenticated"
+  >,
   unchangedSince: number,
   stallThresholdMs: number,
 ): BrowserHarvestState {
@@ -197,16 +203,30 @@ export function deriveLiveTailStateForTest(
 function isBrowserTabActive(
   tab: Pick<
     ChatGptTabSummary,
-    "state" | "stopExists" | "authenticated" | "sendExists" | "promptReady" | "assistantCount"
+    | "state"
+    | "stopExists"
+    | "thinkingActive"
+    | "completionVisible"
+    | "authenticated"
+    | "sendExists"
+    | "promptReady"
+    | "assistantCount"
   >,
 ): boolean {
-  return tab.stopExists || formatBrowserTabState(tab) === "running";
+  return tab.stopExists || tab.thinkingActive || formatBrowserTabState(tab) === "running";
 }
 
 export function isBrowserTabActiveForTest(
   tab: Pick<
     ChatGptTabSummary,
-    "state" | "stopExists" | "authenticated" | "sendExists" | "promptReady" | "assistantCount"
+    | "state"
+    | "stopExists"
+    | "thinkingActive"
+    | "completionVisible"
+    | "authenticated"
+    | "sendExists"
+    | "promptReady"
+    | "assistantCount"
   >,
 ): boolean {
   return isBrowserTabActive(tab);
@@ -215,16 +235,31 @@ export function isBrowserTabActiveForTest(
 function formatBrowserSignals(
   tab: Pick<
     ChatGptTabSummary,
-    "state" | "stopExists" | "authenticated" | "sendExists" | "promptReady" | "assistantCount"
+    | "state"
+    | "stopExists"
+    | "thinkingActive"
+    | "completionVisible"
+    | "authenticated"
+    | "sendExists"
+    | "promptReady"
+    | "assistantCount"
   >,
 ): string {
-  return `active=${isBrowserTabActive(tab) ? "yes" : "no"} stop=${tab.stopExists ? "yes" : "no"} send=${tab.sendExists ? "yes" : "no"}`;
+  const thinkingActive = tab.stopExists || tab.thinkingActive;
+  return `active=${isBrowserTabActive(tab) ? "yes" : "no"} stop=${tab.stopExists ? "yes" : "no"} thinking=${thinkingActive ? "yes" : "no"} completeUi=${tab.completionVisible ? "yes" : "no"} send=${tab.sendExists ? "yes" : "no"}`;
 }
 
 export function formatBrowserSignalsForTest(
   tab: Pick<
     ChatGptTabSummary,
-    "state" | "stopExists" | "authenticated" | "sendExists" | "promptReady" | "assistantCount"
+    | "state"
+    | "stopExists"
+    | "thinkingActive"
+    | "completionVisible"
+    | "authenticated"
+    | "sendExists"
+    | "promptReady"
+    | "assistantCount"
   >,
 ): string {
   return formatBrowserSignals(tab);
@@ -260,6 +295,8 @@ function buildHarvestBrowserMetadata(
       assistantHash: hash,
       state: harvested.state,
       stopExists: harvested.stopExists,
+      thinkingActive: harvested.thinkingActive,
+      completionVisible: harvested.completionVisible,
       sendExists: harvested.sendExists,
       assistantCount: harvested.assistantCount,
       currentModelLabel: harvested.currentModelLabel,

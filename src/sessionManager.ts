@@ -111,6 +111,8 @@ export interface BrowserHarvestMetadata {
   assistantHash?: string;
   state?: BrowserHarvestState;
   stopExists?: boolean;
+  thinkingActive?: boolean;
+  completionVisible?: boolean;
   sendExists?: boolean;
   assistantCount?: number;
   currentModelLabel?: string;

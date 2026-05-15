@@ -40,6 +40,22 @@ describe("browser tab CLI helpers", () => {
     ).toBe("running");
   });
 
+  test("keeps live tail running while Pro thinking continues after first text", () => {
+    const unchangedSince = Date.now() - 120_000;
+    expect(
+      deriveLiveTailStateForTest(
+        {
+          stopExists: false,
+          thinkingActive: true,
+          completionVisible: false,
+          authenticated: true,
+        },
+        unchangedSince,
+        60_000,
+      ),
+    ).toBe("running");
+  });
+
   test("prints an explicit active signal while Stop remains visible", () => {
     const tab = {
       stopExists: true,
@@ -53,7 +69,9 @@ describe("browser tab CLI helpers", () => {
       "stopExists" | "state" | "authenticated" | "sendExists" | "promptReady" | "assistantCount"
     >;
     expect(isBrowserTabActiveForTest(tab)).toBe(true);
-    expect(formatBrowserSignalsForTest(tab)).toBe("active=yes stop=yes send=no");
+    expect(formatBrowserSignalsForTest(tab)).toBe(
+      "active=yes stop=yes thinking=yes completeUi=no send=no",
+    );
   });
 
   test("resolves owner labels while tolerating legacy browser metadata", () => {
@@ -178,7 +196,7 @@ describe("browser tab CLI helpers", () => {
       "Model: GPT-5.5",
       "URL: https://chatgpt.com/c/conversation-1",
       "Assistant turns: 2",
-      "Signals: active=yes stop=yes send=no",
+      "Signals: active=yes stop=yes thinking=yes completeUi=no send=no",
       "Opening: Opening line",
       "Last assistant: Last answer",
       "Last user: Last prompt",
@@ -220,7 +238,7 @@ describe("browser tab CLI helpers", () => {
     } as SessionMetadata;
 
     expect(formatBrowserTabStatusLinesForTest(tab, linkedSession)).toEqual([
-      "- target-1 running active=yes stop=yes send=no model=GPT-5.5 turns=2",
+      "- target-1 running active=yes stop=yes thinking=yes completeUi=no send=no model=GPT-5.5 turns=2",
       "  title=ChatGPT",
       "  url=https://chatgpt.com/c/conversation-1",
       "  conversation=conversation-1",
@@ -318,7 +336,7 @@ describe("browser tab CLI helpers", () => {
         new Date("2026-05-06T00:00:00.000Z"),
       ),
     ).toBe(
-      "[2026-05-06T00:00:00.000Z] session=session-1 owner=agent-a target=target-1 conversation=conversation-1 state=completed active=yes stop=yes send=no model=GPT-5.5 turns=2 opening=Opening line last=Last answer",
+      "[2026-05-06T00:00:00.000Z] session=session-1 owner=agent-a target=target-1 conversation=conversation-1 state=completed active=yes stop=yes thinking=yes completeUi=no send=no model=GPT-5.5 turns=2 opening=Opening line last=Last answer",
     );
   });
 });
