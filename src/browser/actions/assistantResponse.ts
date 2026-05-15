@@ -60,7 +60,9 @@ function isAssistantProgressOnlyText(normalized: string): boolean {
     text === "thinking" ||
     text === "pro thinking" ||
     text === "reasoning" ||
-    text === "working"
+    text === "working" ||
+    text === "reading documents" ||
+    text === "reading document"
   );
 }
 
@@ -233,6 +235,10 @@ export async function waitForAssistantResponse(
       if (stillActive) {
         throw new Error("assistant response still active after watchdog timeout");
       }
+      const finalCompletionVisible = await isCompletionVisible(Runtime);
+      if (!finalCompletionVisible) {
+        throw new Error("assistant response finished without completion UI");
+      }
       const finalSnapshot = normalizeAssistantSnapshot(
         await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId).catch(
           () => null,
@@ -350,7 +356,18 @@ async function recoverAssistantResponse(
   const recovered = await waitForCondition(
     async () => {
       const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId);
-      return normalizeAssistantSnapshot(snapshot);
+      const normalized = normalizeAssistantSnapshot(snapshot);
+      if (!normalized) {
+        return null;
+      }
+      const [active, completionVisible] = await Promise.all([
+        isAssistantProgressActive(Runtime),
+        isCompletionVisible(Runtime),
+      ]);
+      if (active || !completionVisible) {
+        return null;
+      }
+      return normalized;
     },
     recoveryTimeoutMs,
     400,
@@ -548,15 +565,13 @@ async function pollAssistantCompletion(
       // Learned: long streaming responses (esp. thinking models) can pause mid-stream;
       // use progressively longer windows to avoid truncation (#71).
       const completionStableTarget = shortAnswer ? 12 : mediumAnswer ? 8 : longAnswer ? 6 : 8;
-      const requiredStableCycles = shortAnswer ? 12 : mediumAnswer ? 8 : longAnswer ? 8 : 10;
       const stableMs = Date.now() - lastChangeAt;
       const minStableMs = shortAnswer ? 8000 : mediumAnswer ? 1200 : longAnswer ? 2000 : 3000;
       // Require stop button to disappear before treating completion as final.
       if (!stopVisible) {
-        const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
         const completionEnough =
           completionVisible && stableCycles >= completionStableTarget && stableMs >= minStableMs;
-        if (completionEnough || stableEnough) {
+        if (completionEnough) {
           return normalized;
         }
       }
@@ -796,7 +811,7 @@ function buildResponseObserverExpression(
 	    };
 	    const isProgressOnlyText = (value) => {
           const normalized = String(value ?? '').toLowerCase().replace(/\\s+/g, ' ').trim();
-	      return ['finalizing answer', 'finalising answer', 'thinking', 'pro thinking', 'reasoning', 'working'].includes(normalized);
+	      return ['finalizing answer', 'finalising answer', 'thinking', 'pro thinking', 'reasoning', 'working', 'reading documents', 'reading document'].includes(normalized);
 	    };
 
     // Helper to detect assistant turns - must match buildAssistantExtractor logic for consistency.
@@ -992,7 +1007,10 @@ function buildResponseObserverExpression(
       for (;;) {
         if (Date.now() >= deadline) {
           if (!hasActiveProgress()) {
-            break;
+            if (isLastAssistantTurnFinished()) {
+              break;
+            }
+            throw new Error('Response completion UI not visible');
           }
           deadline = Date.now() + ${ASSISTANT_ACTIVE_TIMEOUT_EXTENSION_MS};
         }
@@ -1020,7 +1038,7 @@ function buildResponseObserverExpression(
         const activeProgress = hasActiveProgress();
         const finishedVisible = isLastAssistantTurnFinished();
 
-        if (!activeProgress && (finishedVisible || stableCycles >= stableTarget)) {
+        if (!activeProgress && finishedVisible && stableCycles >= stableTarget) {
           break;
         }
       }

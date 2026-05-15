@@ -364,12 +364,30 @@ describe("ensureLoggedIn", () => {
 describe("waitForAssistantResponse", () => {
   test("returns captured assistant payload", async () => {
     const runtime = {
-      evaluate: vi.fn().mockResolvedValue({
-        result: {
-          type: "object",
-          value: { text: "Answer", html: "<p>Answer</p>", messageId: "mid", turnId: "tid" },
-        },
-      }),
+      evaluate: vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          const payload = {
+            text: "Answer",
+            html: "<p>Answer</p>",
+            messageId: "mid",
+            turnId: "tid",
+          };
+          const expression = String(params?.expression ?? "");
+          if (params?.awaitPromise) {
+            return { result: { type: "object", value: payload } };
+          }
+          if (expression.includes("lastAssistantTurn.querySelector")) {
+            return { result: { value: true } };
+          }
+          if (expression.includes("hasVisibleStopButton")) {
+            return { result: { value: false } };
+          }
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: payload } };
+          }
+          return { result: { value: false } };
+        }),
     } as unknown as ChromeClient["Runtime"];
     const result = await waitForAssistantResponse(runtime, 1000, logger);
     expect(result.text).toBe("Answer");
@@ -430,6 +448,7 @@ describe("waitForAssistantResponse", () => {
     await expect(waitForAssistantResponse(runtime, 100, logger)).rejects.toThrow("stop");
     expect(capturedExpression).toContain("characterData: true");
     expect(capturedExpression).toContain("copy-turn-action-button");
+    expect(capturedExpression).toContain("reading documents");
     expect(capturedExpression).toContain("isLastAssistantTurnFinished");
     expect(capturedExpression).toContain("lastAssistantTurn.querySelector(FINISHED_SELECTOR)");
     expect(capturedExpression).not.toContain("document.querySelector(FINISHED_SELECTOR)");
@@ -442,6 +461,10 @@ describe("waitForAssistantResponse", () => {
   test("observer settle does not treat completion buttons as final while Stop is active", () => {
     const expression = buildResponseObserverExpressionForTest(30_000);
     expect(expression).toContain(
+      "if (!activeProgress && finishedVisible && stableCycles >= stableTarget)",
+    );
+    expect(expression).toContain("Response completion UI not visible");
+    expect(expression).not.toContain(
       "if (!activeProgress && (finishedVisible || stableCycles >= stableTarget))",
     );
     expect(expression).not.toContain(
@@ -470,6 +493,12 @@ describe("waitForAssistantResponse", () => {
               },
             },
           };
+        }
+        if (
+          typeof params?.expression === "string" &&
+          params.expression.includes("lastAssistantTurn.querySelector")
+        ) {
+          return { result: { value: true } };
         }
         return { result: { value: null } };
       });
@@ -506,6 +535,12 @@ describe("waitForAssistantResponse", () => {
             },
           };
         }
+        if (
+          typeof params?.expression === "string" &&
+          params.expression.includes("lastAssistantTurn.querySelector")
+        ) {
+          return { result: { value: true } };
+        }
         return { result: { value: null } };
       });
     const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
@@ -540,6 +575,12 @@ describe("waitForAssistantResponse", () => {
             },
           };
         }
+        if (
+          typeof params?.expression === "string" &&
+          params.expression.includes("lastAssistantTurn.querySelector")
+        ) {
+          return { result: { value: true } };
+        }
         return { result: { value: null } };
       });
     const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
@@ -567,7 +608,7 @@ describe("waitForAssistantResponse", () => {
             return { result: { value: snapshot } };
           }
           if (expression.includes("lastAssistantTurn.querySelector")) {
-            return { result: { value: false } };
+            return { result: { value: !stopVisible } };
           }
           return { result: { value: null } };
         });
@@ -763,7 +804,7 @@ describe("waitForAssistantResponse", () => {
             return { result: { value: snapshot } };
           }
           if (expression.includes("lastAssistantTurn.querySelector")) {
-            return { result: { value: false } };
+            return { result: { value: !stopVisible } };
           }
           return { result: { value: null } };
         });
