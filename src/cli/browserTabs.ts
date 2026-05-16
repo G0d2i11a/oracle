@@ -22,6 +22,7 @@ const DEFAULT_STALL_THRESHOLD_MS = 60_000;
 export interface BrowserHarvestOptions {
   writeOutputPath?: string;
   browserTabRef?: string;
+  browserEndpoint?: { host: string; port: number };
   stallWindowMs?: number;
   quietOutput?: boolean;
 }
@@ -29,6 +30,7 @@ export interface BrowserHarvestOptions {
 export interface BrowserLiveTailOptions {
   writeOutputPath?: string;
   browserTabRef?: string;
+  browserEndpoint?: { host: string; port: number };
   stallThresholdMs?: number;
 }
 
@@ -517,10 +519,11 @@ export async function harvestSessionBrowserOutput(
   if (!meta) {
     throw new Error(`No session found with ID ${sessionId}.`);
   }
-  const endpoint = sessionBrowserEndpoint(meta) ?? {
-    host: DEFAULT_REMOTE_CHROME_HOST,
-    port: DEFAULT_REMOTE_CHROME_PORT,
-  };
+  const endpoint = options.browserEndpoint ??
+    sessionBrowserEndpoint(meta) ?? {
+      host: DEFAULT_REMOTE_CHROME_HOST,
+      port: DEFAULT_REMOTE_CHROME_PORT,
+    };
   const harvested = await harvestChatGptTab({
     host: endpoint.host,
     port: endpoint.port,
@@ -547,10 +550,11 @@ export async function liveTailSessionBrowserOutput(
   if (!meta) {
     throw new Error(`No session found with ID ${sessionId}.`);
   }
-  const endpoint = sessionBrowserEndpoint(meta) ?? {
-    host: DEFAULT_REMOTE_CHROME_HOST,
-    port: DEFAULT_REMOTE_CHROME_PORT,
-  };
+  const endpoint = options.browserEndpoint ??
+    sessionBrowserEndpoint(meta) ?? {
+      host: DEFAULT_REMOTE_CHROME_HOST,
+      port: DEFAULT_REMOTE_CHROME_PORT,
+    };
   const browserTabRef = options.browserTabRef ?? resolveSessionTabRef(meta);
   const stallThresholdMs = options.stallThresholdMs ?? DEFAULT_STALL_THRESHOLD_MS;
   let lastHash: string | null = null;

@@ -1002,6 +1002,68 @@ describe("performSessionRun", () => {
     );
   });
 
+  test("keeps active assistant-response sessions running and preserves latest runtime", async () => {
+    const automationError = new BrowserAutomationError(
+      "Assistant response remained incomplete after concrete-deliverable retries.",
+      {
+        stage: "assistant-response",
+        reason: "incomplete-concrete-deliverable",
+        active: true,
+        stopVisible: true,
+      },
+    );
+    vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(automationError);
+    sessionStoreMock.readSession.mockResolvedValue({
+      ...baseSessionMeta,
+      browser: {
+        runtime: {
+          chromePort: 53193,
+          chromeHost: "127.0.0.1",
+          tabUrl: "https://chatgpt.com/c/demo",
+        },
+      },
+    });
+
+    await performSessionRun({
+      sessionMeta: baseSessionMeta,
+      runOptions: baseRunOptions,
+      mode: "browser",
+      browserConfig: {
+        chromePath: null,
+        autoReattachIntervalMs: 0,
+      },
+      cwd: "/tmp",
+      log,
+      write,
+      version: cliVersion,
+    });
+
+    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    expect(finalUpdate).toMatchObject({
+      status: "running",
+      response: { status: "running", incompleteReason: "incomplete-concrete-deliverable" },
+      browser: expect.objectContaining({
+        runtime: expect.objectContaining({
+          chromePort: 53193,
+          chromeHost: "127.0.0.1",
+          tabUrl: "https://chatgpt.com/c/demo",
+        }),
+      }),
+    });
+    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+      baseSessionMeta.id,
+      "gpt-5.2-pro",
+      expect.objectContaining({
+        status: "running",
+        response: { status: "running", incompleteReason: "incomplete-concrete-deliverable" },
+      }),
+    );
+    const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logLines).toContain(
+      "Assistant response is still active; keeping session running for live reattach instead of marking it failed.",
+    );
+  });
+
   test("records runtime and guidance when cloudflare challenge is detected", async () => {
     const automationError = new BrowserAutomationError(
       "Cloudflare challenge detected. Complete the “Just a moment…” check in the open browser, then rerun.",

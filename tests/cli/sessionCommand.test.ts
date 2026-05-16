@@ -28,6 +28,9 @@ function createCommandWithOptions(options: StatusOptions): Command {
   if (options.browserTab !== undefined) {
     command.setOptionValueWithSource("browserTab", options.browserTab, "cli");
   }
+  if (options.remoteChrome !== undefined) {
+    command.setOptionValueWithSource("remoteChrome", options.remoteChrome, "cli");
+  }
   return command;
 }
 
@@ -212,6 +215,7 @@ describe("handleSessionCommand", () => {
     expect(deps.harvestSessionBrowserOutput).toHaveBeenCalledWith("abc", {
       writeOutputPath: "/tmp/out.md",
       browserTabRef: "current",
+      browserEndpoint: undefined,
     });
     expect(deps.liveTailSessionBrowserOutput).not.toHaveBeenCalled();
   });
@@ -231,8 +235,29 @@ describe("handleSessionCommand", () => {
     expect(deps.liveTailSessionBrowserOutput).toHaveBeenCalledWith("abc", {
       writeOutputPath: undefined,
       browserTabRef: "tab-123",
+      browserEndpoint: undefined,
     });
     expect(deps.harvestSessionBrowserOutput).not.toHaveBeenCalled();
+  });
+
+  test("passes root --remote-chrome endpoint through to live tail", async () => {
+    const command = createCommandWithOptions({
+      hours: 24,
+      limit: 10,
+      all: false,
+      live: true,
+      browserTab: "tab-123",
+      remoteChrome: "127.0.0.1:53193",
+    } as StatusOptions);
+    const deps = createDeps();
+
+    await handleSessionCommand("abc", command, deps);
+
+    expect(deps.liveTailSessionBrowserOutput).toHaveBeenCalledWith("abc", {
+      writeOutputPath: undefined,
+      browserTabRef: "tab-123",
+      browserEndpoint: { host: "127.0.0.1", port: 53193 },
+    });
   });
 
   test("rejects combining --harvest and --live", async () => {

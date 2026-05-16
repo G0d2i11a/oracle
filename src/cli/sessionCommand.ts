@@ -13,6 +13,7 @@ import {
   type BrowserHarvestOptions,
   type BrowserLiveTailOptions,
 } from "./browserTabs.js";
+import { parseRemoteChromeTarget } from "./browserConfig.js";
 import { sessionStore } from "../sessionStore.js";
 
 export interface StatusOptions extends OptionValues {
@@ -34,6 +35,7 @@ export interface StatusOptions extends OptionValues {
   browserTab?: string;
   browserTabRef?: string;
   browserTabs?: boolean;
+  remoteChrome?: string;
 }
 
 interface SessionCommandDependencies {
@@ -104,6 +106,10 @@ export async function handleSessionCommand(
     allOptions.browserTabRef ??
     command.getOptionValue?.("browserTab") ??
     command.getOptionValue?.("browserTabRef");
+  const remoteChromeRef =
+    sessionOptions.remoteChrome ??
+    allOptions.remoteChrome ??
+    command.getOptionValue?.("remoteChrome");
   if (sessionOptions.verboseRender) {
     process.env.ORACLE_VERBOSE_RENDER = "1";
   }
@@ -174,16 +180,28 @@ export async function handleSessionCommand(
       process.exitCode = 1;
       return;
     }
+    let browserEndpoint: { host: string; port: number } | undefined;
+    if (remoteChromeRef) {
+      try {
+        browserEndpoint = parseRemoteChromeTarget(String(remoteChromeRef));
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+        return;
+      }
+    }
     if (harvestRequested) {
       await deps.harvestSessionBrowserOutput(sessionId, {
         writeOutputPath,
         browserTabRef,
+        browserEndpoint,
       });
       return;
     }
     await deps.liveTailSessionBrowserOutput(sessionId, {
       writeOutputPath,
       browserTabRef,
+      browserEndpoint,
     });
     return;
   }

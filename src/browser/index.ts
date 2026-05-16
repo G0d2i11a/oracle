@@ -40,7 +40,11 @@ import {
   waitForUserTurnAttachments,
   readAssistantSnapshot,
 } from "./pageActions.js";
-import { INPUT_SELECTORS } from "./constants.js";
+import {
+  ASSISTANT_ROLE_SELECTOR,
+  FINISHED_ACTIONS_SELECTOR,
+  INPUT_SELECTORS,
+} from "./constants.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
 import { buildVisibleStopButtonFunction } from "./actions/stopButton.js";
 import { ensureThinkingTime } from "./actions/thinkingTime.js";
@@ -126,7 +130,9 @@ function isCloudflareChallengeError(error: unknown): error is BrowserAutomationE
 function isReattachableCaptureError(error: unknown): error is BrowserAutomationError {
   if (!(error instanceof BrowserAutomationError)) return false;
   const stage = (error.details as { stage?: string } | undefined)?.stage;
-  return stage === "assistant-timeout" || stage === "assistant-recheck";
+  return (
+    stage === "assistant-timeout" || stage === "assistant-recheck" || stage === "assistant-response"
+  );
 }
 
 type PreservedBrowserErrorKind = "cloudflare-challenge" | "reattachable-capture";
@@ -361,6 +367,96 @@ async function isBrowserStopButtonVisible(Runtime: ChromeClient["Runtime"]): Pro
   }
 }
 
+async function isBrowserPassiveThinkingIndicatorVisible(
+  Runtime: ChromeClient["Runtime"],
+): Promise<boolean> {
+  try {
+    const { result } = await Runtime.evaluate({
+      expression: `(() => {
+        const TURN_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
+        const ASSISTANT_SELECTOR = ${JSON.stringify(ASSISTANT_ROLE_SELECTOR)};
+        const normalize = (value) =>
+          String(value || '')
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .toLowerCase()
+            .replace(/\\s+/g, ' ')
+            .trim();
+        const isVisible = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const rect = node.getBoundingClientRect();
+          if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+          const style = getComputedStyle(node);
+          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+        };
+        const isAssistantTurn = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const role = String(node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || '').toLowerCase();
+          if (role === 'assistant') return true;
+          const testId = String(node.getAttribute('data-testid') || '').toLowerCase();
+          if (testId.includes('assistant')) return true;
+          return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+        };
+        const turns = Array.from(document.querySelectorAll(TURN_SELECTOR));
+        let latestAssistantTurn = null;
+        for (let index = turns.length - 1; index >= 0; index -= 1) {
+          if (isAssistantTurn(turns[index])) {
+            latestAssistantTurn = turns[index];
+            break;
+          }
+        }
+        if (!latestAssistantTurn) return false;
+        const latestText = normalize(latestAssistantTurn.textContent || '');
+        if (latestText.includes('finalizing answer')) return true;
+        if (
+          Array.from(latestAssistantTurn.querySelectorAll('[aria-busy="true"]')).some(isVisible)
+        ) {
+          return true;
+        }
+        const activeNodes = Array.from(
+          latestAssistantTurn.querySelectorAll(
+            [
+              'span.loading-shimmer',
+              '[role="progressbar"]',
+              'progress',
+              '[data-testid*="loading"]',
+              '[data-testid*="streaming"]',
+            ].join(','),
+          ),
+        );
+        return activeNodes.some((node) => {
+          if (!(node instanceof HTMLElement) || !isVisible(node)) return false;
+          if (node.matches('[aria-expanded="false"]')) return false;
+          if (node.matches('[role="progressbar"], progress')) {
+            const rawValue = node.getAttribute('aria-valuenow') || (node instanceof HTMLProgressElement ? String(node.value) : '');
+            const rawMax = node.getAttribute('aria-valuemax') || (node instanceof HTMLProgressElement ? String(node.max) : '');
+            const value = Number(rawValue);
+            const max = Number(rawMax || '100');
+            if (Number.isFinite(value) && Number.isFinite(max) && max > 0 && value >= max) {
+              return false;
+            }
+          }
+          return true;
+        });
+      })()`,
+      returnByValue: true,
+    });
+    return result?.value === true;
+  } catch {
+    return false;
+  }
+}
+
+async function readBrowserAssistantActivity(
+  Runtime: ChromeClient["Runtime"],
+): Promise<{ stopVisible: boolean; thinkingActive: boolean; active: boolean }> {
+  const [stopVisible, thinkingActive] = await Promise.all([
+    isBrowserStopButtonVisible(Runtime),
+    isBrowserPassiveThinkingIndicatorVisible(Runtime),
+  ]);
+  return { stopVisible, thinkingActive, active: stopVisible || thinkingActive };
+}
+
 export interface BrowserConversationTurn {
   label: string;
   prompt?: string;
@@ -399,7 +495,22 @@ function promptRequestsConcreteDeliverable(prompt: string): boolean {
     "reference implementation",
     "candidate implementation",
     "patch bundle",
+    "patch-focused",
+    "patch-level",
+    "patch plan",
     "patch-style",
+    "proposed code",
+    "exact patch",
+    "exact typescript patch",
+    "typescript patch",
+    "typescript diffs",
+    "precise diff",
+    "precise diffs",
+    "regression tests",
+    "root cause hypothesis",
+    "repair plan",
+    "operational checks",
+    "return sections",
     "complete file-level edits",
   ].some((marker) => normalized.includes(marker));
 }
@@ -430,8 +541,13 @@ function isPromiseOnlyAssistantResponse(answer: string): boolean {
   const normalized = normalizePromiseGuardText(answer);
   if (normalized.length < 20 || normalized.length > 700) return false;
   if (responseHasConcreteDeliverableShape(answer)) return false;
-  return /^(i'll|i will|i am going to|i'm going to|i can)\s+(produce|provide|prepare|draft|write|return|deliver|generate|cover|include|ensure|keep|make|build|review|analyze|design|create|turn|convert)\b/.test(
-    normalized,
+  return (
+    /^(i'll|i will|i am going to|i'm going to|i can)\s+(produce|provide|prepare|draft|write|return|deliver|generate|cover|include|ensure|keep|make|build|review|analyze|design|create|turn|convert|treat|trace|focus|investigate|isolate|examine)\b/.test(
+      normalized,
+    ) ||
+    /^(i'm|i am)\s+(focusing|treating|tracing|reviewing|analyzing|investigating|isolating|examining|preparing|drafting|building)\b/.test(
+      normalized,
+    )
   );
 }
 
@@ -473,19 +589,225 @@ function isIncompleteRalphBundleResponse(prompt: string, answer: string): boolea
   );
 }
 
+function isSuspiciouslyShortConcreteDeliverableResponse(prompt: string, answer: string): boolean {
+  if (!promptRequestsConcreteDeliverable(prompt)) return false;
+  const trimmed = answer.trim();
+  if (!trimmed || trimmed.length > 900) return false;
+  if (responseHasConcreteDeliverableShape(trimmed)) return false;
+  const normalized = normalizePromiseGuardText(trimmed);
+  if (
+    /^(done|ok|okay|yes|no|thanks|thank you|you're welcome|you are welcome)[.!]*$/.test(normalized)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function shouldAutoContinuePromiseOnlyResponse(prompt: string, answer: string): boolean {
   return (
     promptRequestsConcreteDeliverable(prompt) &&
     (isPromiseOnlyAssistantResponse(answer) ||
       isMalformedConcreteDeliverableResponse(prompt, answer) ||
-      isIncompleteRalphBundleResponse(prompt, answer))
+      isIncompleteRalphBundleResponse(prompt, answer) ||
+      isSuspiciouslyShortConcreteDeliverableResponse(prompt, answer))
   );
+}
+
+interface BrowserAnswerFinalizationInput {
+  prompt: string;
+  answerText: string;
+  answerMarkdown?: string | null;
+  attachmentCount?: number;
+  promptEstimatedTokens?: number;
+  stopVisible?: boolean;
+  thinkingActive?: boolean;
+  completionUiVisible?: boolean;
+  completionUiScopedToMessage?: boolean;
+}
+
+interface BrowserAnswerFinalizationVerdict {
+  accepted: boolean;
+  reasons: string[];
+  answerChars: number;
+  answerTokens: number;
+  promptEstimatedTokens: number;
+}
+
+function validateBrowserAnswerFinalization(
+  input: BrowserAnswerFinalizationInput,
+): BrowserAnswerFinalizationVerdict {
+  const answer = (input.answerMarkdown || input.answerText || "").trim();
+  const answerChars = answer.length;
+  const answerTokens = estimateTokenCount(answer);
+  const promptEstimatedTokens = input.promptEstimatedTokens ?? estimateTokenCount(input.prompt);
+  const attachmentCount = input.attachmentCount ?? 0;
+  const expectsDeliverable = promptRequestsConcreteDeliverable(input.prompt);
+  const reasons: string[] = [];
+
+  if (input.stopVisible) {
+    reasons.push("stop-visible");
+  }
+  if (input.thinkingActive) {
+    reasons.push("thinking-active");
+  }
+  if (input.completionUiVisible && !input.completionUiScopedToMessage) {
+    reasons.push("completion-ui-not-scoped-to-candidate");
+  }
+  if (answerChars === 0) {
+    reasons.push("empty-answer");
+  }
+  if (expectsDeliverable && isPromiseOnlyAssistantResponse(answer)) {
+    reasons.push("promise-or-preamble-only");
+  }
+  if (expectsDeliverable && isSuspiciouslyShortConcreteDeliverableResponse(input.prompt, answer)) {
+    reasons.push("suspiciously-short-concrete-deliverable");
+  }
+  if (
+    expectsDeliverable &&
+    answerChars > 0 &&
+    answerChars < 900 &&
+    !responseHasConcreteDeliverableShape(answer) &&
+    (promptEstimatedTokens >= 4_000 || attachmentCount >= 5)
+  ) {
+    reasons.push("large-input-small-output-ratio");
+  }
+
+  return {
+    accepted: reasons.length === 0,
+    reasons,
+    answerChars,
+    answerTokens,
+    promptEstimatedTokens,
+  };
+}
+
+async function readBrowserCompletionUiSignals(
+  Runtime: ChromeClient["Runtime"],
+): Promise<{ completionUiVisible: boolean; completionUiScopedToMessage: boolean }> {
+  try {
+    const { result } = await Runtime.evaluate({
+      expression: `(() => {
+        const TURN_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
+        const ASSISTANT_SELECTOR = ${JSON.stringify(ASSISTANT_ROLE_SELECTOR)};
+        const FINISHED_SELECTOR = ${JSON.stringify(FINISHED_ACTIONS_SELECTOR)};
+        const isVisible = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const rect = node.getBoundingClientRect();
+          if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+          const style = getComputedStyle(node);
+          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+        };
+        const isAssistantTurn = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const role = String(node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || '').toLowerCase();
+          if (role === 'assistant') return true;
+          const testId = String(node.getAttribute('data-testid') || '').toLowerCase();
+          if (testId.includes('assistant')) return true;
+          return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+        };
+        const turns = Array.from(document.querySelectorAll(TURN_SELECTOR));
+        let lastAssistantTurn = null;
+        for (let i = turns.length - 1; i >= 0; i -= 1) {
+          if (isAssistantTurn(turns[i])) {
+            lastAssistantTurn = turns[i];
+            break;
+          }
+        }
+        const visibleFinished = Array.from(document.querySelectorAll(FINISHED_SELECTOR)).filter(isVisible);
+        const isCompletionActionNearAssistantTurn = (button, turn) => {
+          if (!(button instanceof HTMLElement) || !(turn instanceof HTMLElement)) return false;
+          if (!isVisible(button)) return false;
+          if (button.closest('nav, aside, form, [data-testid*="sidebar"], [data-testid*="composer"]')) {
+            return false;
+          }
+          if (turn.contains(button)) return true;
+          const turnRoot = turn.closest('article[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"]');
+          if (turnRoot?.contains(button)) return true;
+          const messageRoot = turn.closest('[data-message-id], [data-testid^="conversation-turn"]');
+          if (messageRoot?.contains(button)) return true;
+          const relation = turn.compareDocumentPosition(button);
+          if ((relation & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return false;
+          const turnRect = turn.getBoundingClientRect();
+          const actionRect = button.getBoundingClientRect();
+          if (!turnRect || !actionRect) return false;
+          return actionRect.top >= turnRect.top - 24 && actionRect.top <= turnRect.bottom + 260;
+        };
+        const scopedFinished = lastAssistantTurn
+          ? visibleFinished.filter((button) => isCompletionActionNearAssistantTurn(button, lastAssistantTurn))
+          : [];
+        return {
+          completionUiVisible: visibleFinished.length > 0,
+          completionUiScopedToMessage: scopedFinished.length > 0,
+        };
+      })()`,
+      returnByValue: true,
+    });
+    const value = result?.value as
+      | { completionUiVisible?: unknown; completionUiScopedToMessage?: unknown }
+      | undefined;
+    return {
+      completionUiVisible: value?.completionUiVisible === true,
+      completionUiScopedToMessage: value?.completionUiScopedToMessage === true,
+    };
+  } catch {
+    return { completionUiVisible: false, completionUiScopedToMessage: false };
+  }
+}
+
+async function assertBrowserAnswerFinalized({
+  Runtime,
+  prompt,
+  answerText,
+  answerMarkdown,
+  attachmentCount,
+  logger,
+}: {
+  Runtime: ChromeClient["Runtime"];
+  prompt: string;
+  answerText: string;
+  answerMarkdown: string;
+  attachmentCount: number;
+  logger: BrowserLogger;
+}): Promise<BrowserAnswerFinalizationVerdict> {
+  const [activity, completionUi] = await Promise.all([
+    readBrowserAssistantActivity(Runtime),
+    readBrowserCompletionUiSignals(Runtime),
+  ]);
+  const verdict = validateBrowserAnswerFinalization({
+    prompt,
+    answerText,
+    answerMarkdown,
+    attachmentCount,
+    stopVisible: activity.stopVisible,
+    thinkingActive: activity.thinkingActive,
+    completionUiVisible: completionUi.completionUiVisible,
+    completionUiScopedToMessage: completionUi.completionUiScopedToMessage,
+  });
+  if (!verdict.accepted) {
+    logger(`[browser] Assistant completion rejected: ${verdict.reasons.join(", ")}`);
+    throw new BrowserAutomationError(
+      "Assistant response did not pass browser completion finalization.",
+      {
+        stage: "assistant-response",
+        reason: "completion-not-accepted",
+        reasons: verdict.reasons,
+        active: activity.active,
+        stopVisible: activity.stopVisible,
+        thinkingActive: activity.thinkingActive,
+        answerChars: verdict.answerChars,
+        answerTokens: verdict.answerTokens,
+        promptEstimatedTokens: verdict.promptEstimatedTokens,
+      },
+    );
+  }
+  return verdict;
 }
 
 function throwIncompleteConcreteDeliverableError(
   prompt: string,
   answer: string,
   label: string,
+  extraDetails: Record<string, unknown> = {},
 ): never {
   const preview = answer.trim().replace(/\s+/g, " ").slice(0, 180);
   throw new BrowserAutomationError(
@@ -496,6 +818,7 @@ function throwIncompleteConcreteDeliverableError(
       label,
       promptRequiresRalphBundle: promptRequiresRalphBundle(prompt),
       answerPreview: preview,
+      ...extraDetails,
     },
   );
 }
@@ -1922,10 +2245,41 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           currentTurn.answerMarkdown || currentTurn.answerText,
         )
       ) {
+        const activity = await readBrowserAssistantActivity(Runtime);
+        if (activity.active) {
+          logger(
+            "[browser] Assistant still active after concrete-deliverable retries; waiting for the current turn instead of failing.",
+          );
+          currentTurn = await captureAssistantTurn(currentPrompt, `${label} completion final`);
+          if (
+            !shouldAutoContinuePromiseOnlyResponse(
+              currentPrompt,
+              currentTurn.answerMarkdown || currentTurn.answerText,
+            )
+          ) {
+            return currentTurn;
+          }
+          const finalActivity = await readBrowserAssistantActivity(Runtime);
+          throwIncompleteConcreteDeliverableError(
+            currentPrompt,
+            currentTurn.answerMarkdown || currentTurn.answerText,
+            label,
+            {
+              active: finalActivity.active,
+              stopVisible: finalActivity.stopVisible,
+              thinkingActive: finalActivity.thinkingActive,
+            },
+          );
+        }
         throwIncompleteConcreteDeliverableError(
           currentPrompt,
           currentTurn.answerMarkdown || currentTurn.answerText,
           label,
+          {
+            active: activity.active,
+            stopVisible: activity.stopVisible,
+            thinkingActive: activity.thinkingActive,
+          },
         );
       }
       return currentTurn;
@@ -1998,6 +2352,14 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger,
     );
     const savedArtifacts = appendArtifacts(savedImageArtifacts, [transcriptArtifact]);
+    await assertBrowserAnswerFinalized({
+      Runtime,
+      prompt: promptText,
+      answerText,
+      answerMarkdown,
+      attachmentCount: attachments.length,
+      logger,
+    });
     const archive = await maybeArchiveCompletedConversation({
       Runtime,
       logger,
@@ -3311,10 +3673,41 @@ async function runRemoteBrowserMode(
           currentTurn.answerMarkdown || currentTurn.answerText,
         )
       ) {
+        const activity = await readBrowserAssistantActivity(Runtime);
+        if (activity.active) {
+          logger(
+            "[browser] Assistant still active after concrete-deliverable retries; waiting for the current turn instead of failing.",
+          );
+          currentTurn = await captureAssistantTurn(currentPrompt, `${label} completion final`);
+          if (
+            !shouldAutoContinuePromiseOnlyResponse(
+              currentPrompt,
+              currentTurn.answerMarkdown || currentTurn.answerText,
+            )
+          ) {
+            return currentTurn;
+          }
+          const finalActivity = await readBrowserAssistantActivity(Runtime);
+          throwIncompleteConcreteDeliverableError(
+            currentPrompt,
+            currentTurn.answerMarkdown || currentTurn.answerText,
+            label,
+            {
+              active: finalActivity.active,
+              stopVisible: finalActivity.stopVisible,
+              thinkingActive: finalActivity.thinkingActive,
+            },
+          );
+        }
         throwIncompleteConcreteDeliverableError(
           currentPrompt,
           currentTurn.answerMarkdown || currentTurn.answerText,
           label,
+          {
+            active: activity.active,
+            stopVisible: activity.stopVisible,
+            thinkingActive: activity.thinkingActive,
+          },
         );
       }
       return currentTurn;
@@ -3383,6 +3776,14 @@ async function runRemoteBrowserMode(
       logger,
     );
     const savedArtifacts = appendArtifacts(savedImageArtifacts, [transcriptArtifact]);
+    await assertBrowserAnswerFinalized({
+      Runtime,
+      prompt: promptText,
+      answerText,
+      answerMarkdown,
+      attachmentCount: attachments.length,
+      logger,
+    });
     const archive = await maybeArchiveCompletedConversation({
       Runtime,
       logger,
@@ -3487,6 +3888,7 @@ export const __test__ = {
   listIgnoredRemoteChromeFlags,
   shouldCloseOwnedRunTargetAfterRun,
   shouldAutoContinuePromiseOnlyResponse,
+  validateBrowserAnswerFinalization,
   buildPromiseOnlyContinuationPromptForTest,
 };
 export { syncCookies } from "./cookies.js";

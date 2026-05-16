@@ -55,6 +55,15 @@ describe("shouldPreserveBrowserOnErrorForTest", () => {
     expect(classifyPreservedBrowserErrorForTest(error, true)).toBeNull();
   });
 
+  test("preserves incomplete assistant responses for reattach", () => {
+    const error = new BrowserAutomationError("assistant incomplete", {
+      stage: "assistant-response",
+    });
+
+    expect(shouldPreserveBrowserOnErrorForTest(error, false)).toBe(true);
+    expect(classifyPreservedBrowserErrorForTest(error, false)).toBe("reattachable-capture");
+  });
+
   test("does not preserve the browser for unrelated browser errors", () => {
     const error = new BrowserAutomationError("other browser error", {
       stage: "execute-browser",
@@ -69,6 +78,72 @@ describe("shouldPreserveBrowserOnErrorForTest", () => {
     });
 
     expect(classifyPreservedBrowserErrorForTest(error, false)).toBe("cloudflare-challenge");
+  });
+});
+
+describe("browser answer finalization guard", () => {
+  test("rejects stop-visible completion even with answer text", () => {
+    const verdict = __test__.validateBrowserAnswerFinalization({
+      prompt: "Return sections: Root Cause, Patch Plan, Proposed Code, Tests.",
+      answerText: "## Patch Plan\n\nUse a stronger completion gate.",
+      answerMarkdown: "## Patch Plan\n\nUse a stronger completion gate.",
+      stopVisible: true,
+      thinkingActive: false,
+      completionUiVisible: true,
+      completionUiScopedToMessage: true,
+    });
+
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.reasons).toContain("stop-visible");
+  });
+
+  test("rejects large concrete-deliverable prompts with tiny preambles", () => {
+    const verdict = __test__.validateBrowserAnswerFinalization({
+      prompt:
+        "This is an actual complete deliverable request. Return the patch bundle / complete file-level edits and tests now.",
+      answerText:
+        "I’m focusing on the browser capture/completion path: tiny plan-like assistant turns are being accepted as completed output.",
+      answerMarkdown:
+        "I’m focusing on the browser capture/completion path: tiny plan-like assistant turns are being accepted as completed output.",
+      attachmentCount: 23,
+      stopVisible: false,
+      thinkingActive: false,
+      completionUiVisible: true,
+      completionUiScopedToMessage: true,
+    });
+
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.reasons).toContain("promise-or-preamble-only");
+    expect(verdict.reasons).toContain("large-input-small-output-ratio");
+  });
+
+  test("rejects completion UI that is not scoped to the candidate turn", () => {
+    const verdict = __test__.validateBrowserAnswerFinalization({
+      prompt: "Provide TypeScript diffs and regression tests.",
+      answerText: "## Patch\n\nA short structured patch plan.",
+      answerMarkdown: "## Patch\n\nA short structured patch plan.",
+      stopVisible: false,
+      thinkingActive: false,
+      completionUiVisible: true,
+      completionUiScopedToMessage: false,
+    });
+
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.reasons).toContain("completion-ui-not-scoped-to-candidate");
+  });
+
+  test("accepts short but structured deliverables when browser is idle", () => {
+    const verdict = __test__.validateBrowserAnswerFinalization({
+      prompt: "Provide TypeScript diffs and regression tests.",
+      answerText: "## Patch\n\n```ts\nconst ok = true;\n```\n\n## Tests\n\nRun vitest.",
+      answerMarkdown: "## Patch\n\n```ts\nconst ok = true;\n```\n\n## Tests\n\nRun vitest.",
+      stopVisible: false,
+      thinkingActive: false,
+      completionUiVisible: true,
+      completionUiScopedToMessage: true,
+    });
+
+    expect(verdict.accepted).toBe(true);
   });
 });
 
@@ -206,6 +281,27 @@ describe("promise-only browser answer guard", () => {
     ).toBe(true);
   });
 
+  test("continues when a patch review receives only a preamble", () => {
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        "Provide TypeScript diffs and regression tests. Return sections: Root Cause Hypothesis, Patch Plan, Proposed Code, Tests, Operational Checks, Residual Risk.",
+        "I’ll treat this as an Oracle browser-capture failure and trace the TypeScript paths where an early assistant DOM snapshot can be persisted as completed.",
+      ),
+    ).toBe(true);
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        "We need a patch-level diagnosis and repair plan with exact TypeScript patches.",
+        "Initial assessment: the browser harvest probably accepted a stable DOM snapshot before the requested patch sections were produced.",
+      ),
+    ).toBe(true);
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        "This is an actual complete deliverable request. Return the patch bundle / complete file-level edits and tests now.",
+        "I’m focusing on the browser capture/completion path: tiny plan-like assistant turns are being accepted as completed output.",
+      ),
+    ).toBe(true);
+  });
+
   test("continuation prompt restates required Ralph bundle sections", () => {
     const continuation = __test__.buildPromiseOnlyContinuationPromptForTest(
       "Produce a Ralph-compatible PRD plus referenceImplementation with userStories, acceptanceCriteria, and touchedFiles.",
@@ -230,6 +326,12 @@ describe("promise-only browser answer guard", () => {
         '{"prd":{"id":"x","userStories":[],"referenceImplementation":{"touchedFiles":[]}}}',
       ),
     ).toBe(false);
+    expect(
+      __test__.shouldAutoContinuePromiseOnlyResponse(
+        "Provide TypeScript diffs and regression tests.",
+        "## Patch\n\n```ts\nconst ok = true;\n```\n\n## Tests\n\nRun the targeted browser tests.",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -243,8 +345,9 @@ describe("browser completion guard coverage", () => {
       )?.length,
     ).toBe(2);
     expect(
-      source.match(/Stop button still visible after assistant capture; waiting for final response\./g)
-        ?.length,
+      source.match(
+        /Stop button still visible after assistant capture; waiting for final response\./g,
+      )?.length,
     ).toBe(2);
   });
 });

@@ -520,18 +520,37 @@ export async function performSessionRun({
     log(`ERROR: ${message}`);
     markErrorLogged(error);
     const userError = asOracleUserError(error);
+    const userErrorDetails = userError?.details as
+      | ({ stage?: string; runtime?: BrowserRuntimeMetadata } & Record<string, unknown>)
+      | undefined;
+    const latestSessionMeta =
+      mode === "browser"
+        ? await Promise.resolve(sessionStore.readSession(sessionMeta.id)).catch(() => null)
+        : null;
+    const storedBrowserRuntime =
+      latestSessionMeta?.browser?.runtime ?? sessionMeta.browser?.runtime;
+    const errorRuntime = userErrorDetails?.runtime ?? storedBrowserRuntime;
     const connectionLost =
-      userError?.category === "browser-automation" &&
-      (userError.details as { stage?: string } | undefined)?.stage === "connection-lost";
+      userError?.category === "browser-automation" && userErrorDetails?.stage === "connection-lost";
     const assistantTimeout =
       userError?.category === "browser-automation" &&
-      (userError.details as { stage?: string } | undefined)?.stage === "assistant-timeout";
+      userErrorDetails?.stage === "assistant-timeout";
+    const assistantResponse =
+      userError?.category === "browser-automation" &&
+      userErrorDetails?.stage === "assistant-response";
+    const assistantResponseStillActive =
+      assistantResponse &&
+      (userErrorDetails?.active === true ||
+        userErrorDetails?.stopVisible === true ||
+        userErrorDetails?.thinkingActive === true ||
+        (Array.isArray(userErrorDetails?.reasons) &&
+          userErrorDetails.reasons.some(
+            (reason) => reason === "stop-visible" || reason === "thinking-active",
+          )));
     const cloudflareChallenge =
       userError?.category === "browser-automation" &&
-      (userError.details as { stage?: string } | undefined)?.stage === "cloudflare-challenge";
+      userErrorDetails?.stage === "cloudflare-challenge";
     if (connectionLost && mode === "browser") {
-      const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)
-        ?.runtime;
       log(dim("Chrome disconnected before completion; keeping session running for reattach."));
       if (modelForStatus) {
         await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
@@ -544,19 +563,13 @@ export async function performSessionRun({
         errorMessage: message,
         mode,
         browser: browserConfig
-          ? buildBrowserMetadata(
-              browserConfig,
-              browserOwner,
-              runtime ?? sessionMeta.browser?.runtime,
-            )
+          ? buildBrowserMetadata(browserConfig, browserOwner, errorRuntime)
           : undefined,
         response: { status: "running", incompleteReason: "chrome-disconnected" },
       });
       return;
     }
     if (assistantTimeout && mode === "browser") {
-      const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)
-        ?.runtime;
       log(dim("Assistant response timed out; marking capture incomplete for reattach."));
       if (modelForStatus) {
         await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
@@ -576,11 +589,7 @@ export async function performSessionRun({
         errorMessage: message,
         mode,
         browser: browserConfig
-          ? buildBrowserMetadata(
-              browserConfig,
-              browserOwner,
-              runtime ?? sessionMeta.browser?.runtime,
-            )
+          ? buildBrowserMetadata(browserConfig, browserOwner, errorRuntime)
           : undefined,
         response: { status: "incomplete", incompleteReason: "incomplete-capture" },
         error: {
@@ -591,10 +600,9 @@ export async function performSessionRun({
       });
       const autoReattachIntervalMs = browserConfig?.autoReattachIntervalMs ?? 0;
       if (autoReattachIntervalMs > 0) {
-        const autoRuntime = runtime ?? sessionMeta.browser?.runtime;
         const success = await autoReattachUntilComplete({
           sessionMeta,
-          runtime: autoRuntime ?? undefined,
+          runtime: errorRuntime ?? undefined,
           browserConfig,
           runOptions,
           modelForStatus,
@@ -606,6 +614,61 @@ export async function performSessionRun({
         }
       }
       log(dim(`Reattach later with: oracle session ${sessionMeta.id}`));
+      return;
+    }
+    if (assistantResponseStillActive && mode === "browser") {
+      const incompleteReason =
+        typeof userErrorDetails?.reason === "string"
+          ? userErrorDetails.reason
+          : "assistant-response-active";
+      log(
+        dim(
+          "Assistant response is still active; keeping session running for live reattach instead of marking it failed.",
+        ),
+      );
+      if (modelForStatus) {
+        await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
+          status: "running",
+          completedAt: undefined,
+          response: { status: "running", incompleteReason },
+          error: {
+            category: userError.category,
+            message: userError.message,
+            details: userError.details,
+          },
+        });
+      }
+      await sessionStore.updateSession(sessionMeta.id, {
+        status: "running",
+        completedAt: undefined,
+        errorMessage: message,
+        mode,
+        browser: browserConfig
+          ? buildBrowserMetadata(browserConfig, browserOwner, errorRuntime)
+          : undefined,
+        response: { status: "running", incompleteReason },
+        error: {
+          category: userError.category,
+          message: userError.message,
+          details: userError.details,
+        },
+      });
+      const autoReattachIntervalMs = browserConfig?.autoReattachIntervalMs ?? 0;
+      if (autoReattachIntervalMs > 0) {
+        const success = await autoReattachUntilComplete({
+          sessionMeta,
+          runtime: errorRuntime ?? undefined,
+          browserConfig,
+          runOptions,
+          modelForStatus,
+          notificationSettings,
+          log,
+        });
+        if (success) {
+          return;
+        }
+      }
+      log(dim(`Reattach now with: oracle session ${sessionMeta.id} --live`));
       return;
     }
     if (cloudflareChallenge && mode === "browser") {
@@ -631,10 +694,7 @@ export async function performSessionRun({
     if (transportLine) {
       log(dim(`Transport: ${transportLine}`));
     }
-    const browserRuntime =
-      mode === "browser"
-        ? (userError?.details as { runtime?: BrowserRuntimeMetadata } | undefined)?.runtime
-        : undefined;
+    const browserRuntime = mode === "browser" ? errorRuntime : undefined;
     await sessionStore.updateSession(sessionMeta.id, {
       status: "error",
       completedAt: new Date().toISOString(),

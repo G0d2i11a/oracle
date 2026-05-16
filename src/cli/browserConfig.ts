@@ -344,7 +344,7 @@ function isGenericProBrowserAlias(normalizedInput: string): boolean {
   return mentions55 && normalized.includes("pro") && !normalized.includes("extended");
 }
 
-function parseRemoteChromeTarget(raw: string): { host: string; port: number } {
+export function parseRemoteChromeTarget(raw: string): { host: string; port: number } {
   const target = raw.trim();
   if (!target) {
     throw new Error(
