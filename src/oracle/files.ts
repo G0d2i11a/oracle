@@ -4,7 +4,7 @@ import fg from "fast-glob";
 import type { FileContent, FileSection, MinimalFsModule, FsStats } from "./types.js";
 import { FileValidationError } from "./errors.js";
 
-export const DEFAULT_MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1 MB
+export const DEFAULT_MAX_FILE_SIZE_BYTES = 0; // unlimited; set config/env to cap per file
 const DEFAULT_FS = fs as MinimalFsModule;
 const DEFAULT_IGNORED_DIRS = new Set([
   "node_modules",
@@ -473,12 +473,21 @@ export function normalizeMaxFileSizeBytes(
   if (value == null || value === "") {
     return undefined;
   }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["0", "off", "none", "false", "unlimited"].includes(normalized)) {
+      return 0;
+    }
+  }
   const parsed =
     typeof value === "number"
       ? value
       : Number.parseInt(typeof value === "string" ? value.trim() : String(value), 10);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    throw new Error(`${source} must be a positive integer number of bytes.`);
+  if (parsed === 0) {
+    return 0;
+  }
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${source} must be 0 or a positive integer number of bytes.`);
   }
   return parsed;
 }

@@ -63,7 +63,10 @@ async function runApiDryRun(
   deps: DryRunDeps,
 ): Promise<void> {
   const readFilesImpl = deps.readFilesImpl ?? readFiles;
-  const files = await readFilesImpl(runOptions.file ?? [], { cwd });
+  const files = await readFilesImpl(runOptions.file ?? [], {
+    cwd,
+    maxFileSizeBytes: runOptions.maxFileSizeBytes,
+  });
   const systemPrompt = runOptions.system?.trim() || DEFAULT_SYSTEM_PROMPT;
   const combinedPrompt = buildPrompt(runOptions.prompt ?? "", files, cwd);
   const modelConfig = isKnownModel(runOptions.model)

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 export default defineConfig({
   test: {
+    exclude: ["**/.ralph-*/**", "**/node_modules/**", "**/dist/**"],
     setupFiles: ["tests/setup-env.ts", "tests/cli/runOracle/setup.ts"],
     coverage: {
       provider: "v8",

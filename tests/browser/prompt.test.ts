@@ -21,6 +21,7 @@ function buildOptions(overrides: Partial<RunOracleOptions> = {}): RunOracleOptio
     system: overrides.system,
     browserAttachments: overrides.browserAttachments ?? "auto",
     browserInlineFiles: overrides.browserInlineFiles,
+    maxFileSizeBytes: overrides.maxFileSizeBytes,
   } as RunOracleOptions;
 }
 
@@ -44,6 +45,21 @@ describe("assembleBrowserPrompt", () => {
     expect(result.attachments).toEqual([]);
     expect(result.inlineFileCount).toBe(1);
     expect(result.tokenEstimateIncludesInlineFiles).toBe(true);
+  });
+
+  test("passes maxFileSizeBytes to the file reader", async () => {
+    const options = buildOptions({ maxFileSizeBytes: 2_000_000 });
+    let receivedMaxFileSizeBytes: number | undefined;
+
+    await assembleBrowserPrompt(options, {
+      cwd: "/repo",
+      readFilesImpl: async (_paths, readOptions) => {
+        receivedMaxFileSizeBytes = readOptions.maxFileSizeBytes;
+        return [{ path: "/repo/a.txt", content: "hello" }];
+      },
+    });
+
+    expect(receivedMaxFileSizeBytes).toBe(2_000_000);
   });
 
   test("auto mode uploads when inline composer exceeds ~60k chars", async () => {

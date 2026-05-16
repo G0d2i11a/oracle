@@ -30,6 +30,29 @@ describe("runDryRunSummary", () => {
     expect(log.mock.calls.some(([entry]) => String(entry).includes("File Token Usage"))).toBe(true);
   });
 
+  test("passes maxFileSizeBytes to API dry-run file reader", async () => {
+    const log = vi.fn();
+    let receivedMaxFileSizeBytes: number | undefined;
+
+    await runDryRunSummary(
+      {
+        engine: "api",
+        runOptions: { ...baseRunOptions, file: ["big.md"], maxFileSizeBytes: 2_000_000 },
+        cwd: "/repo",
+        version: "1.2.3",
+        log,
+      },
+      {
+        readFilesImpl: async (_paths, readOptions) => {
+          receivedMaxFileSizeBytes = readOptions.maxFileSizeBytes;
+          return [{ path: "/repo/big.md", content: "large but allowed" }];
+        },
+      },
+    );
+
+    expect(receivedMaxFileSizeBytes).toBe(2_000_000);
+  });
+
   test("prints browser attachment summary", async () => {
     const log = vi.fn();
     await runDryRunSummary(

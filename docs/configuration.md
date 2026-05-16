@@ -58,7 +58,7 @@ Oracle reads an optional per-user config from `~/.oracle/config.json`. The file 
   },
 
   heartbeatSeconds: 30, // default heartbeat interval
-  maxFileSizeBytes: 2097152, // raise/lower the per-file attachment guard (bytes)
+  maxFileSizeBytes: 2097152, // optional per-file attachment guard (bytes); omit or set 0 for no cap
   filesReport: false, // default per-file token report
   background: true, // default background mode for API runs
   sessionRetentionHours: 72, // prune cached sessions older than 72h before each run (0 disables)
@@ -78,7 +78,7 @@ CLI flags → `config.json` → environment → built-in defaults.
 - `OPENAI_API_KEY` only influences engine selection when neither the CLI nor `config.json` specify an engine (API when present, otherwise browser).
 - `ORACLE_NOTIFY*` env vars still layer on top of the config’s `notify` block.
 - `sessionRetentionHours` controls the default value for `--retain-hours`. When unset, `ORACLE_RETAIN_HOURS` (if present) becomes the fallback, and the CLI flag still wins over both.
-- `ORACLE_MAX_FILE_SIZE_BYTES` overrides `maxFileSizeBytes` when set. Oracle validates it as a positive integer number of bytes before reading any `--file` inputs.
+- `ORACLE_MAX_FILE_SIZE_BYTES` overrides `maxFileSizeBytes` when set. Use a positive integer byte value to cap file attachments, or `0`, `off`, `none`, `false`, or `unlimited` to disable the cap.
 - `browser.chatgptUrl` accepts either the root ChatGPT URL (`https://chatgpt.com/`) or a folder/workspace URL (e.g., `https://chatgpt.com/g/.../project`); `browser.url` remains as a legacy alias.
 - Browser automation defaults can be set under `browser.*`, including `browser.manualLogin`, `browser.manualLoginProfileDir`, `browser.attachRunning`, `browser.thinkingTime` (CLI override: `--browser-thinking-time`), and `browser.researchMode` (CLI override: `--browser-research`). On Windows, `browser.manualLogin` defaults to `true` when omitted.
 

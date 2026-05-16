@@ -280,7 +280,7 @@ program
   )
   .option(
     "-f, --file <paths...>",
-    "Files/directories or glob patterns to attach (prefix with !pattern to exclude). Oversized files are rejected automatically (default cap: 1 MB; configurable via ORACLE_MAX_FILE_SIZE_BYTES or config.maxFileSizeBytes).",
+    "Files/directories or glob patterns to attach (prefix with !pattern to exclude). File size is uncapped by default; set ORACLE_MAX_FILE_SIZE_BYTES or config.maxFileSizeBytes to cap it.",
     collectPaths,
     [],
   )
@@ -1635,7 +1635,12 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       throw new Error("Prompt is required when using --render-markdown or --copy-markdown.");
     }
     const bundle = await buildMarkdownBundle(
-      { prompt: options.prompt, file: options.file, system: options.system },
+      {
+        prompt: options.prompt,
+        file: options.file,
+        system: options.system,
+        maxFileSizeBytes: resolvedOptions.maxFileSizeBytes,
+      },
       { cwd: process.cwd() },
     );
     const modelConfig = isKnownModel(resolvedModel)
