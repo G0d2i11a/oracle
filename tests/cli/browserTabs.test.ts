@@ -56,6 +56,82 @@ describe("browser tab CLI helpers", () => {
     ).toBe("running");
   });
 
+  test("keeps live tail running when completion UI appears before text is stable", () => {
+    const unchangedSince = Date.now() - 1_000;
+    expect(
+      deriveLiveTailStateForTest(
+        {
+          stopExists: false,
+          thinkingActive: false,
+          completionVisible: true,
+          authenticated: true,
+        },
+        unchangedSince,
+        60_000,
+        "Final answer body",
+        8_000,
+      ),
+    ).toBe("running");
+  });
+
+  test("does not treat a one-character harvest as completed output", () => {
+    const unchangedSince = Date.now() - 1_000;
+    expect(
+      deriveLiveTailStateForTest(
+        {
+          stopExists: false,
+          thinkingActive: false,
+          completionVisible: true,
+          authenticated: true,
+        },
+        unchangedSince,
+        60_000,
+        "I",
+        8_000,
+      ),
+    ).toBe("running");
+  });
+
+  test("keeps live tail running until Stop has been absent long enough", () => {
+    const unchangedSince = Date.now() - 20_000;
+    const activeClearedSince = Date.now() - 1_000;
+    expect(
+      deriveLiveTailStateForTest(
+        {
+          stopExists: false,
+          thinkingActive: false,
+          completionVisible: true,
+          authenticated: true,
+        },
+        unchangedSince,
+        60_000,
+        "Final answer body",
+        8_000,
+        activeClearedSince,
+      ),
+    ).toBe("running");
+  });
+
+  test("marks stable non-trivial completed text as completed", () => {
+    const unchangedSince = Date.now() - 10_000;
+    const activeClearedSince = Date.now() - 10_000;
+    expect(
+      deriveLiveTailStateForTest(
+        {
+          stopExists: false,
+          thinkingActive: false,
+          completionVisible: true,
+          authenticated: true,
+        },
+        unchangedSince,
+        60_000,
+        "Final answer body",
+        8_000,
+        activeClearedSince,
+      ),
+    ).toBe("completed");
+  });
+
   test("prints an explicit active signal while Stop remains visible", () => {
     const tab = {
       stopExists: true,

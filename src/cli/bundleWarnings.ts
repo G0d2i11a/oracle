@@ -8,7 +8,7 @@ export function warnIfOversizeBundle(
   if (Number.isNaN(estimatedTokens) || estimatedTokens <= threshold) {
     return false;
   }
-  const msg = `Warning: bundle is ~${estimatedTokens.toLocaleString()} tokens (>${threshold.toLocaleString()}); may exceed model limits.`;
+  const msg = `Advisory: bundle is ~${estimatedTokens.toLocaleString()} tokens (>${threshold.toLocaleString()}). Treat this as an estimate only; do not shrink browser-mode context unless the user asks or the UI/API returns a hard rejection.`;
   log(chalk.red(msg));
   return true;
 }

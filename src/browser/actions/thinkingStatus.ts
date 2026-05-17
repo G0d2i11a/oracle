@@ -3,8 +3,6 @@ import { formatElapsed } from "../../oracle/format.js";
 import { ASSISTANT_ROLE_SELECTOR, CONVERSATION_TURN_SELECTOR } from "../constants.js";
 import { buildVisibleStopButtonFunction } from "./stopButton.js";
 
-const THINKING_STALE_HINT_MS = 10 * 60_000;
-
 export interface ThinkingStatusSnapshot {
   message: string;
   source: "inline" | "sidecar";
@@ -97,10 +95,8 @@ export function formatThinkingLog(
     : `[browser] ChatGPT thinking - ${elapsedText} elapsed`;
   const statusLabel = snapshot.message ? `; status=${snapshot.message}` : "";
   const changeLabel = unchangedMs > 0 ? `; last change ${formatElapsed(unchangedMs)} ago` : "";
-  const staleLabel =
-    unchangedMs >= THINKING_STALE_HINT_MS ? "; stale-hint=no UI progress change" : "";
   const sourceLabel = snapshot.source ? `; source=${snapshot.source}` : "";
-  return `${prefix}${statusLabel}${changeLabel}${staleLabel}${sourceLabel}${locatorSuffix}`;
+  return `${prefix}${statusLabel}${changeLabel}${sourceLabel}${locatorSuffix}`;
 }
 
 export function formatThinkingWaitingLog(startedAt: number, now: number): string {

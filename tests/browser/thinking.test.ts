@@ -276,7 +276,7 @@ describe("formatThinkingLog", () => {
     expect(line).toContain("100% UI progress");
   });
 
-  test("adds a stale hint when UI progress does not change for a long time", () => {
+  test("keeps long unchanged thinking heartbeats informational only", () => {
     const line = formatThinkingLog(
       0,
       900_000,
@@ -284,7 +284,10 @@ describe("formatThinkingLog", () => {
       "",
       10 * 60_000,
     );
-    expect(line).toContain("stale-hint=no UI progress change");
+    expect(line).toBe(
+      "[browser] ChatGPT thinking - 42% UI progress, 15m 0s elapsed; status=active; last change 10m 0s ago; source=sidecar",
+    );
+    expect(line).not.toContain("stale");
   });
 
   test("renders waiting heartbeat when no status is visible", () => {

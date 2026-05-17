@@ -18,6 +18,7 @@ import { resolveOutputPath } from "./writeOutputPath.js";
 
 const LIVE_POLL_MS = 2000;
 const DEFAULT_STALL_THRESHOLD_MS = 60_000;
+const DEFAULT_COMPLETION_STABLE_MS = 8_000;
 
 export interface BrowserHarvestOptions {
   writeOutputPath?: string;
@@ -181,11 +182,22 @@ function deriveLiveTailState(
   >,
   unchangedSince: number,
   stallThresholdMs: number,
+  fullText = "",
+  completionStableMs = DEFAULT_COMPLETION_STABLE_MS,
+  activeClearedSince = unchangedSince,
 ): BrowserHarvestState {
   if (harvested.stopExists || harvested.thinkingActive) {
     return "running";
   }
   if (harvested.authenticated && harvested.completionVisible) {
+    const stableSince = Math.max(unchangedSince, activeClearedSince);
+    const stableForMs = Date.now() - stableSince;
+    if (isLowSignalAssistantSnippet(fullText)) {
+      return stableForMs >= stallThresholdMs ? "stalled" : "running";
+    }
+    if (stableForMs < completionStableMs) {
+      return "running";
+    }
     return "completed";
   }
   return Date.now() - unchangedSince >= stallThresholdMs ? "stalled" : "detached";
@@ -198,8 +210,18 @@ export function deriveLiveTailStateForTest(
   >,
   unchangedSince: number,
   stallThresholdMs: number,
+  fullText?: string,
+  completionStableMs?: number,
+  activeClearedSince?: number,
 ): BrowserHarvestState {
-  return deriveLiveTailState(harvested, unchangedSince, stallThresholdMs);
+  return deriveLiveTailState(
+    harvested,
+    unchangedSince,
+    stallThresholdMs,
+    fullText,
+    completionStableMs,
+    activeClearedSince,
+  );
 }
 
 function isBrowserTabActive(
@@ -466,12 +488,17 @@ async function maybeWriteHarvestOutput(
   pathInput: string | undefined,
   cwd: string,
   content: string,
+  options: { allowLowSignal?: boolean } = {},
 ): Promise<void> {
   const resolved = resolveOutputPath(pathInput, cwd);
   if (!resolved) {
     return;
   }
   const payload = content ?? "";
+  if (!options.allowLowSignal && isLowSignalAssistantSnippet(payload)) {
+    console.log(chalk.dim("write-output skipped: harvested assistant output appears incomplete."));
+    return;
+  }
   if (resolved === "-" || resolved === "/dev/stdout") {
     process.stdout.write(`${payload}${payload.endsWith("\n") ? "" : "\n"}`);
     return;
@@ -559,6 +586,7 @@ export async function liveTailSessionBrowserOutput(
   const stallThresholdMs = options.stallThresholdMs ?? DEFAULT_STALL_THRESHOLD_MS;
   let lastHash: string | null = null;
   let unchangedSince = Date.now();
+  let activeClearedSince = Date.now();
 
   while (true) {
     const harvested = await harvestChatGptTab({
@@ -566,6 +594,9 @@ export async function liveTailSessionBrowserOutput(
       port: endpoint.port,
       ref: browserTabRef,
     });
+    if (harvested.stopExists || harvested.thinkingActive) {
+      activeClearedSince = Date.now();
+    }
     const fullText = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "";
     const hash = createHash("sha1").update(fullText).digest("hex");
     if (hash !== lastHash) {
@@ -576,7 +607,14 @@ export async function liveTailSessionBrowserOutput(
       await persistHarvest(sessionId, meta, harvested);
     }
 
-    const derivedState = deriveLiveTailState(harvested, unchangedSince, stallThresholdMs);
+    const derivedState = deriveLiveTailState(
+      harvested,
+      unchangedSince,
+      stallThresholdMs,
+      fullText,
+      DEFAULT_COMPLETION_STABLE_MS,
+      activeClearedSince,
+    );
 
     if (derivedState === "completed" || derivedState === "stalled" || derivedState === "detached") {
       const finalHarvest: ChatGptTabSummary = {
@@ -587,9 +625,11 @@ export async function liveTailSessionBrowserOutput(
       printHarvestSummary(sessionId, finalHarvest, resolveBrowserOwner(meta));
       const output = finalHarvest.lastAssistantMarkdown ?? finalHarvest.lastAssistantText ?? "";
       if (options.writeOutputPath) {
-        await maybeWriteHarvestOutput(options.writeOutputPath, meta.cwd ?? process.cwd(), output);
+        await maybeWriteHarvestOutput(options.writeOutputPath, meta.cwd ?? process.cwd(), output, {
+          allowLowSignal: derivedState === "completed",
+        });
       }
-      if (output) {
+      if (output && !isLowSignalAssistantSnippet(output)) {
         process.stdout.write(`${output}${output.endsWith("\n") ? "" : "\n"}`);
       }
       return finalHarvest;

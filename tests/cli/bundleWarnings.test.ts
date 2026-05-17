@@ -8,7 +8,8 @@ describe("warnIfOversizeBundle", () => {
     expect(warned).toBe(true);
     expect(log).toHaveBeenCalledTimes(1);
     expect(log.mock.calls[0][0]).toMatch(/200,000 tokens/);
-    expect(log.mock.calls[0][0]).toMatch(/Warning/);
+    expect(log.mock.calls[0][0]).toMatch(/Advisory/);
+    expect(log.mock.calls[0][0]).toMatch(/do not shrink browser-mode context/);
   });
 
   test("does nothing when under threshold", () => {
