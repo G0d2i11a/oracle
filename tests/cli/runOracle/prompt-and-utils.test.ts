@@ -55,28 +55,6 @@ describe("renderPromptMarkdown", () => {
     }
   });
 
-  test("warns when render-markdown exceeds token threshold", async () => {
-    const cwd = await mkdtemp(path.join(os.tmpdir(), "oracle-warn-"));
-    const filePath = path.join(cwd, "big.txt");
-    const chunk = "a".repeat(50_000);
-    await writeFile(filePath, chunk.repeat(4), "utf8"); // ~200k chars → ~50k tokens
-    const logs: string[] = [];
-    try {
-      await renderPromptMarkdown(
-        {
-          prompt: "Hello world",
-          file: [filePath],
-        },
-        { cwd },
-      );
-      const { warnIfOversizeBundle } = await import("../../../src/cli/bundleWarnings.ts");
-      const warned = warnIfOversizeBundle(200_000, 196_000, (msg: string) => logs.push(msg));
-      expect(warned).toBe(true);
-      expect(logs.join("\n")).toMatch(/Advisory: bundle is ~200,000 tokens/);
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("oracle utility helpers", () => {

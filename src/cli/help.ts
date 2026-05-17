@@ -71,7 +71,7 @@ function renderHelpBanner(version: string, colors: HelpColors): string {
 function renderHelpFooter(program: Command, colors: HelpColors): string {
   const tips = [
     `${colors.bullet("•")} Required: always pass a prompt AND ${colors.accent("--file …")} (directories/globs are fine); Oracle cannot see your project otherwise.`,
-    `${colors.bullet("•")} Attach lots of source (whole directories beat single files). Token estimates and ~196k hints are advisory for browser mode; do not shrink context unless the user asks or the UI/API returns a hard rejection.`,
+    `${colors.bullet("•")} Attach lots of source (whole directories beat single files).`,
     `${colors.bullet("•")} Oracle starts empty—open with a short project briefing (stack, services, build steps), spell out the question and prior attempts, and why it matters; the more explanation and context you provide, the better the response will be.`,
     `${colors.bullet("•")} Spell out the project + platform + version requirements (repo name, target OS/toolchain versions, API dependencies) so Oracle doesn’t guess defaults.`,
     `${colors.bullet("•")} When comparing multiple repos/files, spell out each repo + path + role (e.g., “Project A SettingsView → apps/project-a/Sources/SettingsView.swift; Project B SettingsView → ../project-b/mac/...”) so the model knows exactly which file is which.`,

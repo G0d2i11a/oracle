@@ -12,7 +12,6 @@ const TAGLINES = [
   "Globs become guidance.",
   "Token-aware, omen-ready.",
   "Globs go in; citations and costs come out.",
-  "Keeps 196k tokens feeling roomy, not risky.",
   "Remembers your paths, forgets your past runs.",
   "A TUI when you want it, a one-liner when you do not.",
   "Less ceremony, more certainty.",

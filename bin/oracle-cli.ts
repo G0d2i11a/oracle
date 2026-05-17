@@ -60,7 +60,6 @@ import { isMediaFile } from "../src/browser/prompt.js";
 import { attachSession, showStatus, formatCompletionSummary } from "../src/cli/sessionDisplay.js";
 import { formatCompactNumber } from "../src/cli/format.js";
 import { formatIntroLine } from "../src/cli/tagline.js";
-import { warnIfOversizeBundle } from "../src/cli/bundleWarnings.js";
 import { formatRenderedMarkdown } from "../src/cli/renderOutput.js";
 import { resolveRenderFlag, resolveRenderPlain } from "../src/cli/renderFlags.js";
 import { resolveGeminiModelId } from "../src/oracle/gemini.js";
@@ -1655,8 +1654,6 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       storeResponse: false,
     });
     const estimatedTokens = estimateRequestTokens(requestBody, modelConfig);
-    const warnThreshold = Math.min(196_000, modelConfig.inputLimit ?? 196_000);
-    warnIfOversizeBundle(estimatedTokens, warnThreshold, console.log);
     if (renderMarkdown) {
       const output = renderPlain
         ? bundle.markdown
