@@ -243,7 +243,7 @@ function buildTabInspectionExpression(): string {
         const label = normalize(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title'));
         return LOGIN_CTA.test(label);
       });
-      const stopExists = hasVisibleStopButton();
+      const mainStopExists = hasVisibleStopButton();
       const sendButton = firstVisible(SEND_SELECTORS);
       const sendExists = Boolean(sendButton);
       const promptNode = firstVisible(INPUT_SELECTORS);
@@ -316,6 +316,26 @@ function buildTabInspectionExpression(): string {
         const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
         return Array.from(markdowns).some((node) => normalize(node.textContent) === 'Done');
       };
+      const hasLargeDeepResearchFrame = () =>
+        Array.from(document.querySelectorAll('iframe')).some((frame) => {
+          if (!isVisible(frame)) return false;
+          const rect = frame.getBoundingClientRect();
+          const label = normalizeLower([
+            frame.getAttribute('src'),
+            frame.getAttribute('title'),
+            frame.getAttribute('name'),
+          ].filter(Boolean).join(' '));
+          return (
+            rect.width > 200 &&
+            rect.height > 160 &&
+            (
+              label.includes('deep-research') ||
+              label.includes('deep research') ||
+              label.includes('connector_openai_deep_research') ||
+              label.includes('internal://deep-research')
+            )
+          );
+        });
       const answerNode = ANSWER_SELECTORS
         .map((selector) => document.querySelectorAll(selector))
         .find((matches) => matches && matches.length > 0);
@@ -363,8 +383,15 @@ function buildTabInspectionExpression(): string {
       const openingLine = firstNonEmptyLine(firstAssistantRawText);
       const lastAssistantText = assistantTexts[assistantTexts.length - 1] || answerTexts[answerTexts.length - 1] || '';
       const lastUserText = userTexts[userTexts.length - 1] || '';
-      const thinkingActive = stopExists || isProgressOnlyText(lastAssistantText) || hasThinkingIndicator();
       const completionVisible = hasCompletionUi();
+      const lastAssistantLowSignal =
+        !normalize(lastAssistantText) ||
+        ['chatgpt said:', 'chatgpt said', 'called tool', 'used tool'].includes(normalizeLower(lastAssistantText));
+      const deepResearchFrameActive =
+        hasLargeDeepResearchFrame() && !completionVisible && lastAssistantLowSignal;
+      const stopExists = mainStopExists || deepResearchFrameActive;
+      const thinkingActive =
+        stopExists || deepResearchFrameActive || isProgressOnlyText(lastAssistantText) || hasThinkingIndicator();
       const authenticated = !loginButtonExists && (promptReady || sendExists || stopExists || assistantCount > 0);
       return {
         title: normalize(document.title),

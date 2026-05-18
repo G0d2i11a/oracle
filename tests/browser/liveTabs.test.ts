@@ -134,6 +134,15 @@ describe("liveTabs helpers", () => {
     expect(expression).toContain("completionVisible");
   });
 
+  test("treats an active Deep Research iframe with an empty assistant turn as running", () => {
+    const expression = buildTabInspectionExpressionForTest();
+    expect(expression).toContain("hasLargeDeepResearchFrame");
+    expect(expression).toContain("internal://deep-research");
+    expect(expression).toContain("deepResearchFrameActive");
+    expect(expression).toContain("lastAssistantLowSignal");
+    expect(expression).toContain("const stopExists = mainStopExists || deepResearchFrameActive");
+  });
+
   test("inspects first/opening and last assistant snippets", async () => {
     cdpMocks.runtime.evaluate
       .mockResolvedValueOnce({
