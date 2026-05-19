@@ -271,7 +271,7 @@ program
   .addOption(new Option("--message <text>", "Alias for --prompt.").hideHelp())
   .option(
     "--followup <sessionId|responseId>",
-    "Continue an OpenAI/Azure Responses API run from a stored response id (resp_...) or from a stored oracle session id.",
+    "Continue an API run from a stored response id/session, or a browser run from a stored browser session.",
   )
   .option(
     "--followup-model <model>",
@@ -1156,6 +1156,13 @@ interface FollowupResolution {
   sessionId?: string;
 }
 
+interface BrowserFollowupResolution {
+  sessionId: string;
+  tabRef?: string;
+  chatgptUrl?: string;
+  remoteChrome?: string;
+}
+
 function assertFollowupSupported({
   engine,
   model,
@@ -1279,6 +1286,173 @@ async function resolveFollowupReference(
   throw new Error(
     `Session ${trimmed} does not contain a stored response id. Ensure the original run produced a Responses API response id (background/store helps).`,
   );
+}
+
+async function resolveBrowserFollowupReference(value: string): Promise<BrowserFollowupResolution> {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error("--followup requires a browser session id in browser mode.");
+  }
+  if (trimmed.startsWith("resp_")) {
+    throw new Error(
+      "--followup in browser mode requires a stored browser session id, not a Responses API response id.",
+    );
+  }
+
+  const meta = await sessionStore.readSession(trimmed);
+  if (!meta) {
+    const suggestions = await suggestFollowupSessionIds(trimmed);
+    const suggestionText =
+      suggestions.length > 0
+        ? ` Did you mean: ${suggestions.map((id) => `"${id}"`).join(", ")}?`
+        : "";
+    throw new Error(
+      `No browser session found with ID ${trimmed}.${suggestionText} Run "oracle status --browser-tabs --hours 72" or "oracle status --hours 72 --limit 20" to list recent sessions.`,
+    );
+  }
+
+  if (!isBrowserSessionMetadata(meta)) {
+    throw new Error(
+      `Session ${meta.id} is not a browser-mode session. Use --engine api to follow up API sessions.`,
+    );
+  }
+
+  const chatgptUrl = resolveBrowserFollowupUrl(meta);
+  const tabRef = resolveBrowserFollowupTabRef(meta, chatgptUrl);
+  const remoteChrome = resolveBrowserFollowupRemoteChrome(meta);
+  if (!chatgptUrl && !tabRef) {
+    throw new Error(
+      `Browser session ${meta.id} does not contain a stored ChatGPT conversation URL or tab reference. Re-run with --browser-tab if the tab is still open, or start a new browser session.`,
+    );
+  }
+
+  return {
+    sessionId: meta.id,
+    tabRef,
+    chatgptUrl,
+    remoteChrome,
+  };
+}
+
+function applyBrowserFollowupToOptions(
+  options: CliOptions,
+  followup: BrowserFollowupResolution,
+): void {
+  if (!options.chatgptUrl && !options.browserUrl && followup.chatgptUrl) {
+    options.chatgptUrl = followup.chatgptUrl;
+  }
+  if (!options.remoteChrome && followup.remoteChrome) {
+    options.remoteChrome = followup.remoteChrome;
+  }
+  if (!options.browserTab && followup.tabRef) {
+    options.browserTab = followup.tabRef;
+  }
+}
+
+function isBrowserSessionMetadata(meta: SessionMetadata): boolean {
+  return meta.mode === "browser" || meta.options?.mode === "browser" || Boolean(meta.browser);
+}
+
+function resolveBrowserFollowupTabRef(
+  meta: SessionMetadata,
+  conversationUrl?: string,
+): string | undefined {
+  const runtime = meta.browser?.runtime ?? {};
+  const harvest = meta.browser?.harvest ?? {};
+  const candidates = [
+    conversationUrl,
+    harvest.conversationId,
+    runtime.conversationId,
+    harvest.targetId,
+    runtime.chromeTargetId,
+  ];
+  return firstNonEmptyString(candidates);
+}
+
+function resolveBrowserFollowupRemoteChrome(meta: SessionMetadata): string | undefined {
+  const runtime = meta.browser?.runtime ?? {};
+  const remote = meta.browser?.config?.remoteChrome;
+  const host = runtime.chromeHost ?? remote?.host;
+  const port = runtime.chromePort ?? remote?.port;
+  if (!host || !port) {
+    return undefined;
+  }
+  return `${host}:${port}`;
+}
+
+function resolveBrowserFollowupUrl(meta: SessionMetadata): string | undefined {
+  const runtime = meta.browser?.runtime ?? {};
+  const harvest = meta.browser?.harvest ?? {};
+  const config = meta.browser?.config ?? meta.options?.browserConfig;
+  const directUrl = firstNonEmptyString([harvest.url, runtime.tabUrl]);
+  if (directUrl && isChatGptConversationUrl(directUrl)) {
+    return directUrl;
+  }
+
+  const conversationId =
+    firstNonEmptyString([harvest.conversationId, runtime.conversationId]) ??
+    extractChatGptConversationId(directUrl) ??
+    extractChatGptConversationId(config?.url) ??
+    extractChatGptConversationId(config?.chatgptUrl ?? undefined);
+  if (!conversationId) {
+    return undefined;
+  }
+
+  const baseUrl =
+    directUrl ?? firstNonEmptyString([config?.url, config?.chatgptUrl ?? undefined]) ?? CHATGPT_URL;
+  return buildChatGptConversationUrl(baseUrl, conversationId);
+}
+
+function buildChatGptConversationUrl(baseUrl: string, conversationId: string): string {
+  const normalizedId = conversationId.trim();
+  try {
+    const url = new URL(baseUrl);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const conversationIndex = parts.indexOf("c");
+    if (conversationIndex >= 0) {
+      parts.splice(conversationIndex + 1, parts.length - conversationIndex - 1, normalizedId);
+    } else {
+      const projectIndex = parts.indexOf("project");
+      if (projectIndex >= 0) {
+        parts.splice(projectIndex + 1, parts.length - projectIndex - 1, "c", normalizedId);
+      } else {
+        parts.splice(0, parts.length, "c", normalizedId);
+      }
+    }
+    url.pathname = `/${parts.join("/")}`;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return `${CHATGPT_URL.replace(/\/+$/u, "")}/c/${normalizedId}`;
+  }
+}
+
+function isChatGptConversationUrl(value: string | undefined): boolean {
+  return Boolean(extractChatGptConversationId(value));
+}
+
+function extractChatGptConversationId(value: string | undefined): string | undefined {
+  const raw = value?.trim();
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    const match = url.pathname.match(/\/c\/([^/?#]+)/u);
+    return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+  } catch {
+    const match = raw.match(/(?:^|\/)c\/([^/?#\s]+)/u);
+    return match?.[1];
+  }
+}
+
+function firstNonEmptyString(values: Array<string | null | undefined>): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
 }
 
 function extractResponseIdFromSession(
@@ -1687,6 +1861,33 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   applyBrowserDefaultsFromConfig(options, userConfig, getSource);
 
   const sessionMode: SessionMode = engine === "browser" ? "browser" : "api";
+  if (options.followup) {
+    if (normalizedMultiModels.length > 0) {
+      throw new Error("--followup cannot be combined with --models.");
+    }
+    if (sessionMode === "browser") {
+      if (options.followupModel) {
+        throw new Error("--followup-model is only supported for API multi-model sessions.");
+      }
+      if (options.browserResearch === "deep") {
+        throw new Error("--followup is not supported with browser Deep Research mode.");
+      }
+      const followup = await resolveBrowserFollowupReference(options.followup);
+      applyBrowserFollowupToOptions(options, followup);
+      resolvedOptions.followupSessionId = followup.sessionId;
+    } else {
+      assertFollowupSupported({
+        engine,
+        model: resolvedModel,
+        baseUrl: resolvedBaseUrl,
+        azureEndpoint: resolvedOptions.azureEndpoint,
+      });
+      const followup = await resolveFollowupReference(options.followup, options.followupModel);
+      resolvedOptions.previousResponseId = followup.responseId;
+      resolvedOptions.followupSessionId = followup.sessionId;
+      resolvedOptions.followupModel = options.followupModel;
+    }
+  }
   const browserModelLabelOverride =
     sessionMode === "browser" ? resolveBrowserModelLabel(cliModelArg, resolvedModel) : undefined;
   const browserConfig =
@@ -1706,21 +1907,6 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       options.prompt = `${options.prompt.trim()}\n${userConfig.promptSuffix}`;
     }
     resolvedOptions.prompt = options.prompt;
-    if (options.followup) {
-      assertFollowupSupported({
-        engine,
-        model: resolvedModel,
-        baseUrl: resolvedBaseUrl,
-        azureEndpoint: resolvedOptions.azure?.endpoint,
-      });
-      if (normalizedMultiModels.length > 0) {
-        throw new Error("--followup cannot be combined with --models.");
-      }
-      const followup = await resolveFollowupReference(options.followup, options.followupModel);
-      resolvedOptions.previousResponseId = followup.responseId;
-      resolvedOptions.followupSessionId = followup.sessionId;
-      resolvedOptions.followupModel = options.followupModel;
-    }
     const runOptions = buildRunOptions(resolvedOptions, {
       preview: true,
       previewMode,
@@ -1775,21 +1961,6 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     options.prompt = `${options.prompt.trim()}\n${userConfig.promptSuffix}`;
   }
   resolvedOptions.prompt = options.prompt;
-  if (options.followup) {
-    assertFollowupSupported({
-      engine,
-      model: resolvedModel,
-      baseUrl: resolvedBaseUrl,
-      azureEndpoint: resolvedOptions.azure?.endpoint,
-    });
-    if (normalizedMultiModels.length > 0) {
-      throw new Error("--followup cannot be combined with --models.");
-    }
-    const followup = await resolveFollowupReference(options.followup, options.followupModel);
-    resolvedOptions.previousResponseId = followup.responseId;
-    resolvedOptions.followupSessionId = followup.sessionId;
-    resolvedOptions.followupModel = options.followupModel;
-  }
 
   const duplicateBlocked = await shouldBlockDuplicatePrompt({
     prompt: resolvedOptions.prompt,

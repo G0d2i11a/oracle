@@ -37,10 +37,10 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 
 ## Followup / lineage
 
-| Flag                            | Purpose                                       |
-| ------------------------------- | --------------------------------------------- |
-| `--followup <id\|slug\|resp_…>` | Continue an OpenAI/Azure Responses API run.   |
-| `--followup-model <model>`      | Pick lineage when the parent used `--models`. |
+| Flag                            | Purpose                                                                      |
+| ------------------------------- | ---------------------------------------------------------------------------- |
+| `--followup <id\|slug\|resp_…>` | Continue an API run, or a browser run from a stored browser session id/slug. |
+| `--followup-model <model>`      | Pick API lineage when the parent used `--models`.                            |
 
 ## Run control
 
@@ -116,17 +116,17 @@ See [Browser Mode](browser-mode.md) for usage.
 
 ## Environment variables
 
-| Var                           | Effect                                                  |
-| ----------------------------- | ------------------------------------------------------- |
-| `OPENAI_API_KEY`              | Enables OpenAI API mode.                                |
-| `AZURE_OPENAI_API_KEY` etc.   | Enables Azure mode (paired with endpoint / deployment). |
-| `GEMINI_API_KEY`              | Enables Gemini API mode.                                |
-| `ANTHROPIC_API_KEY`           | Enables Claude API mode.                                |
-| `OPENROUTER_API_KEY`          | Enables OpenRouter ids.                                 |
-| `ORACLE_HOME_DIR`             | Override `~/.oracle/` root.                             |
+| Var                           | Effect                                                                       |
+| ----------------------------- | ---------------------------------------------------------------------------- |
+| `OPENAI_API_KEY`              | Enables OpenAI API mode.                                                     |
+| `AZURE_OPENAI_API_KEY` etc.   | Enables Azure mode (paired with endpoint / deployment).                      |
+| `GEMINI_API_KEY`              | Enables Gemini API mode.                                                     |
+| `ANTHROPIC_API_KEY`           | Enables Claude API mode.                                                     |
+| `OPENROUTER_API_KEY`          | Enables OpenRouter ids.                                                      |
+| `ORACLE_HOME_DIR`             | Override `~/.oracle/` root.                                                  |
 | `ORACLE_MAX_FILE_SIZE_BYTES`  | Optional per-file size cap; `0`/`off`/`unlimited` disables a configured cap. |
-| `ORACLE_BROWSER_COOKIES_JSON` | Inline ChatGPT cookies (JSON / base64).                 |
-| `ORACLE_BROWSER_COOKIES_FILE` | Path to cookies JSON.                                   |
+| `ORACLE_BROWSER_COOKIES_JSON` | Inline ChatGPT cookies (JSON / base64).                                      |
+| `ORACLE_BROWSER_COOKIES_FILE` | Path to cookies JSON.                                                        |
 
 ## See also
 

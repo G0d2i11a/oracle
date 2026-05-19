@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { mkdtemp, writeFile, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readdir, readFile, rm, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
@@ -183,6 +183,227 @@ describe("oracle CLI integration", () => {
       expect(metadata.options?.previousResponseId).toBe(directResponseId);
       expect(metadata.options?.followupSessionId).toBeUndefined();
       expect(metadata.options?.followupModel).toBeUndefined();
+
+      await rm(oracleHome, { recursive: true, force: true });
+    },
+    INTEGRATION_TIMEOUT,
+  );
+
+  test(
+    "accepts browser session ids in --followup for browser dry-runs",
+    async () => {
+      const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-browser-followup-"));
+      const parentId = "browser-parent-session";
+      const parentConversationUrl = "https://chatgpt.com/c/browser-followup-conversation";
+      const parentSessionDir = path.join(oracleHome, "sessions", parentId);
+      await mkdir(parentSessionDir, { recursive: true });
+      await writeFile(
+        path.join(parentSessionDir, "meta.json"),
+        JSON.stringify(
+          {
+            id: parentId,
+            createdAt: new Date().toISOString(),
+            status: "completed",
+            promptPreview: "Parent browser run",
+            model: "gpt-5.2",
+            mode: "browser",
+            cwd: process.cwd(),
+            options: {
+              prompt: "Parent browser run",
+              model: "gpt-5.2",
+              mode: "browser",
+              browserConfig: {
+                url: parentConversationUrl,
+                remoteChrome: { host: "127.0.0.1", port: 53193 },
+              },
+            },
+            browser: {
+              config: {
+                url: parentConversationUrl,
+                remoteChrome: { host: "127.0.0.1", port: 53193 },
+              },
+              runtime: {
+                chromeHost: "127.0.0.1",
+                chromePort: 53193,
+                chromeTargetId: "target-browser-followup",
+                tabUrl: parentConversationUrl,
+                conversationId: "browser-followup-conversation",
+              },
+              harvest: {
+                targetId: "target-browser-followup",
+                url: parentConversationUrl,
+                conversationId: "browser-followup-conversation",
+                state: "completed",
+              },
+            },
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      const env = {
+        ...process.env,
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_HOME_DIR: oracleHome,
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_DISABLE_KEYTAR: "1",
+      };
+
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          CLI_ENTRY,
+          "--engine",
+          "browser",
+          "--dry-run",
+          "summary",
+          "--prompt",
+          "Child browser followup",
+          "--model",
+          "gpt-5.2",
+          "--followup",
+          parentId,
+        ],
+        { env },
+      );
+
+      expect(stdout).toContain("browser mode (gpt-5.2)");
+      expect(stdout).toContain("reuse an existing remote Chrome tab");
+      expect(stdout).toContain(parentConversationUrl);
+
+      await rm(oracleHome, { recursive: true, force: true });
+    },
+    INTEGRATION_TIMEOUT,
+  );
+
+  test(
+    "rejects response ids in browser --followup",
+    async () => {
+      const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-browser-followup-resp-"));
+      const env = {
+        ...process.env,
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_HOME_DIR: oracleHome,
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_DISABLE_KEYTAR: "1",
+      };
+
+      try {
+        await execFileAsync(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            CLI_ENTRY,
+            "--engine",
+            "browser",
+            "--dry-run",
+            "summary",
+            "--prompt",
+            "Browser response id followup",
+            "--model",
+            "gpt-5.2",
+            "--followup",
+            "resp_direct_followup_12345",
+          ],
+          { env },
+        );
+        throw new Error("Expected oracle CLI to fail but it succeeded.");
+      } catch (error) {
+        const stderr =
+          error && typeof error === "object" && error !== null && "stderr" in error
+            ? String((error as { stderr?: unknown }).stderr ?? "")
+            : "";
+        expect(stderr).toMatch(/browser mode requires a stored browser session id/i);
+      }
+
+      await rm(oracleHome, { recursive: true, force: true });
+    },
+    INTEGRATION_TIMEOUT,
+  );
+
+  test(
+    "uses browser target id when followup session lacks a conversation URL",
+    async () => {
+      const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-browser-followup-target-"));
+      const parentId = "browser-parent-target-session";
+      const parentTargetId = "target-browser-followup-only";
+      const parentSessionDir = path.join(oracleHome, "sessions", parentId);
+      await mkdir(parentSessionDir, { recursive: true });
+      await writeFile(
+        path.join(parentSessionDir, "meta.json"),
+        JSON.stringify(
+          {
+            id: parentId,
+            createdAt: new Date().toISOString(),
+            status: "completed",
+            promptPreview: "Parent browser run",
+            model: "gpt-5.2",
+            mode: "browser",
+            cwd: process.cwd(),
+            options: {
+              prompt: "Parent browser run",
+              model: "gpt-5.2",
+              mode: "browser",
+              browserConfig: {
+                url: "https://chatgpt.com/",
+                remoteChrome: { host: "127.0.0.1", port: 53193 },
+              },
+            },
+            browser: {
+              config: {
+                url: "https://chatgpt.com/",
+                remoteChrome: { host: "127.0.0.1", port: 53193 },
+              },
+              runtime: {
+                chromeHost: "127.0.0.1",
+                chromePort: 53193,
+                chromeTargetId: parentTargetId,
+                tabUrl: "https://chatgpt.com/",
+              },
+            },
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      const env = {
+        ...process.env,
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_HOME_DIR: oracleHome,
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_DISABLE_KEYTAR: "1",
+      };
+
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          CLI_ENTRY,
+          "--engine",
+          "browser",
+          "--dry-run",
+          "summary",
+          "--prompt",
+          "Child browser target followup",
+          "--model",
+          "gpt-5.2",
+          "--followup",
+          parentId,
+        ],
+        { env },
+      );
+
+      expect(stdout).toContain("reuse an existing remote Chrome tab");
+      expect(stdout).toContain(parentTargetId);
+      expect(stdout).not.toContain("https://chatgpt.com/) in the configured remote Chrome session");
 
       await rm(oracleHome, { recursive: true, force: true });
     },

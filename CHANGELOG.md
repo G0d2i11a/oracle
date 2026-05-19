@@ -6,6 +6,7 @@
 
 - Browser/MCP: add non-destructive ChatGPT Project Sources management (`oracle project-sources list|add`, MCP `project_sources`) so Developer Mode workflows can share explicit project context through Sources. Addresses #131 and builds on #132 by @vgorlovi.
 - Browser: add repeatable `--browser-follow-up` prompts and MCP `browserFollowUps` for multi-turn ChatGPT browser consults in one conversation. (#170) — thanks @pdurlej.
+- Browser: allow `--engine browser --followup <sessionId>` to continue a stored ChatGPT browser session by reusing its saved conversation URL, tab reference, and Chrome DevTools endpoint.
 - Browser: add live ChatGPT tab inspection, `oracle status --browser-tabs`, browser session harvest/live-tail commands, and `--browser-tab <ref>` to reuse an existing ChatGPT tab by current tab, target id, URL, or title substring. (#126) — thanks @NathanSkene.
 - Browser: persist stable owner labels for browser sessions from config/env/slug/cwd fallbacks, surface them in session, tab, and live-tail displays, and keep tab matching based only on target, URL, and conversation metadata.
 - Browser: show opening and latest assistant snippets when inspecting, harvesting, or live-tailing live ChatGPT tabs.
