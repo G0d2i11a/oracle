@@ -99,7 +99,7 @@ export interface BrowserRuntimeMetadata {
   controllerPid?: number;
 }
 
-export type BrowserHarvestState = "running" | "completed" | "stalled" | "detached";
+export type BrowserHarvestState = "running" | "completed" | "stalled" | "detached" | "blocked";
 
 export interface BrowserHarvestMetadata {
   ownerLabel?: string;
@@ -110,8 +110,11 @@ export interface BrowserHarvestMetadata {
   harvestedAt?: string;
   assistantHash?: string;
   state?: BrowserHarvestState;
+  blocker?: string;
   stopExists?: boolean;
   thinkingActive?: boolean;
+  deepResearchStopExists?: boolean;
+  deepResearchActive?: boolean;
   completionVisible?: boolean;
   sendExists?: boolean;
   assistantCount?: number;

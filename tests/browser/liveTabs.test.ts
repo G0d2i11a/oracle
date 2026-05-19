@@ -92,6 +92,7 @@ describe("liveTabs helpers", () => {
   test("classifies running/completed/detached states", () => {
     expect(
       classifyTabState({
+        blocker: undefined,
         authenticated: true,
         stopExists: true,
         thinkingActive: true,
@@ -103,6 +104,7 @@ describe("liveTabs helpers", () => {
     ).toBe("running");
     expect(
       classifyTabState({
+        blocker: undefined,
         authenticated: true,
         stopExists: false,
         thinkingActive: false,
@@ -114,6 +116,7 @@ describe("liveTabs helpers", () => {
     ).toBe("completed");
     expect(
       classifyTabState({
+        blocker: undefined,
         authenticated: false,
         stopExists: false,
         thinkingActive: false,
@@ -123,6 +126,18 @@ describe("liveTabs helpers", () => {
         assistantCount: 0,
       }),
     ).toBe("detached");
+    expect(
+      classifyTabState({
+        blocker: "login-expired",
+        authenticated: false,
+        stopExists: true,
+        thinkingActive: true,
+        completionVisible: false,
+        sendExists: false,
+        promptReady: false,
+        assistantCount: 1,
+      }),
+    ).toBe("blocked");
   });
 
   test("status completion UI accepts finished actions near the latest assistant turn", () => {
@@ -134,13 +149,21 @@ describe("liveTabs helpers", () => {
     expect(expression).toContain("completionVisible");
   });
 
-  test("treats an active Deep Research iframe with an empty assistant turn as running", () => {
+  test("treats an active Deep Research iframe as running even after a preamble", () => {
     const expression = buildTabInspectionExpressionForTest();
     expect(expression).toContain("hasLargeDeepResearchFrame");
     expect(expression).toContain("internal://deep-research");
     expect(expression).toContain("deepResearchFrameActive");
-    expect(expression).toContain("lastAssistantLowSignal");
+    expect(expression).toContain("hasLargeDeepResearchFrame() && !completionVisible");
     expect(expression).toContain("const stopExists = mainStopExists || deepResearchFrameActive");
+  });
+
+  test("surfaces expired ChatGPT sessions as blockers", () => {
+    const expression = buildTabInspectionExpressionForTest();
+    expect(expression).toContain("expired-session");
+    expect(expression).toContain("your session has expired");
+    expect(expression).toContain("const blocker = loginExpired ? 'login-expired'");
+    expect(expression).toContain("authenticated = !blocker");
   });
 
   test("inspects first/opening and last assistant snippets", async () => {

@@ -178,7 +178,7 @@ export function resolveBrowserOwnerLabelForTest(
 function deriveLiveTailState(
   harvested: Pick<
     ChatGptTabSummary,
-    "stopExists" | "thinkingActive" | "completionVisible" | "authenticated"
+    "blocker" | "stopExists" | "thinkingActive" | "completionVisible" | "authenticated"
   >,
   unchangedSince: number,
   stallThresholdMs: number,
@@ -186,6 +186,9 @@ function deriveLiveTailState(
   completionStableMs = DEFAULT_COMPLETION_STABLE_MS,
   activeClearedSince = unchangedSince,
 ): BrowserHarvestState {
+  if (harvested.blocker) {
+    return "blocked";
+  }
   if (harvested.stopExists || harvested.thinkingActive) {
     return "running";
   }
@@ -206,7 +209,7 @@ function deriveLiveTailState(
 export function deriveLiveTailStateForTest(
   harvested: Pick<
     ChatGptTabSummary,
-    "stopExists" | "thinkingActive" | "completionVisible" | "authenticated"
+    "blocker" | "stopExists" | "thinkingActive" | "completionVisible" | "authenticated"
   >,
   unchangedSince: number,
   stallThresholdMs: number,
@@ -228,6 +231,7 @@ function isBrowserTabActive(
   tab: Pick<
     ChatGptTabSummary,
     | "state"
+    | "blocker"
     | "stopExists"
     | "thinkingActive"
     | "completionVisible"
@@ -237,6 +241,9 @@ function isBrowserTabActive(
     | "assistantCount"
   >,
 ): boolean {
+  if (tab.blocker) {
+    return false;
+  }
   return tab.stopExists || tab.thinkingActive || formatBrowserTabState(tab) === "running";
 }
 
@@ -244,6 +251,7 @@ export function isBrowserTabActiveForTest(
   tab: Pick<
     ChatGptTabSummary,
     | "state"
+    | "blocker"
     | "stopExists"
     | "thinkingActive"
     | "completionVisible"
@@ -260,6 +268,7 @@ function formatBrowserSignals(
   tab: Pick<
     ChatGptTabSummary,
     | "state"
+    | "blocker"
     | "stopExists"
     | "thinkingActive"
     | "completionVisible"
@@ -270,13 +279,15 @@ function formatBrowserSignals(
   >,
 ): string {
   const thinkingActive = tab.stopExists || tab.thinkingActive;
-  return `active=${isBrowserTabActive(tab) ? "yes" : "no"} stop=${tab.stopExists ? "yes" : "no"} thinking=${thinkingActive ? "yes" : "no"} completeUi=${tab.completionVisible ? "yes" : "no"} send=${tab.sendExists ? "yes" : "no"}`;
+  const base = `active=${isBrowserTabActive(tab) ? "yes" : "no"} stop=${tab.stopExists ? "yes" : "no"} thinking=${thinkingActive ? "yes" : "no"} completeUi=${tab.completionVisible ? "yes" : "no"} send=${tab.sendExists ? "yes" : "no"}`;
+  return tab.blocker ? `${base} blocker=${tab.blocker}` : base;
 }
 
 export function formatBrowserSignalsForTest(
   tab: Pick<
     ChatGptTabSummary,
     | "state"
+    | "blocker"
     | "stopExists"
     | "thinkingActive"
     | "completionVisible"
@@ -318,8 +329,11 @@ function buildHarvestBrowserMetadata(
       harvestedAt: harvestedAt.toISOString(),
       assistantHash: hash,
       state: harvested.state,
+      blocker: harvested.blocker,
       stopExists: harvested.stopExists,
       thinkingActive: harvested.thinkingActive,
+      deepResearchStopExists: harvested.deepResearchStopExists,
+      deepResearchActive: harvested.deepResearchActive,
       completionVisible: harvested.completionVisible,
       sendExists: harvested.sendExists,
       assistantCount: harvested.assistantCount,
@@ -616,7 +630,12 @@ export async function liveTailSessionBrowserOutput(
       activeClearedSince,
     );
 
-    if (derivedState === "completed" || derivedState === "stalled" || derivedState === "detached") {
+    if (
+      derivedState === "completed" ||
+      derivedState === "stalled" ||
+      derivedState === "detached" ||
+      derivedState === "blocked"
+    ) {
       const finalHarvest: ChatGptTabSummary = {
         ...harvested,
         state: derivedState,

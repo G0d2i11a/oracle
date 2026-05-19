@@ -40,6 +40,17 @@ describe("browser tab CLI helpers", () => {
     ).toBe("running");
   });
 
+  test("does not keep live tail running forever when ChatGPT login has expired", () => {
+    const unchangedSince = Date.now() - 120_000;
+    expect(
+      deriveLiveTailStateForTest(
+        { blocker: "login-expired", stopExists: true, authenticated: false },
+        unchangedSince,
+        60_000,
+      ),
+    ).toBe("blocked");
+  });
+
   test("keeps live tail running while Pro thinking continues after first text", () => {
     const unchangedSince = Date.now() - 120_000;
     expect(
@@ -147,6 +158,31 @@ describe("browser tab CLI helpers", () => {
     expect(isBrowserTabActiveForTest(tab)).toBe(true);
     expect(formatBrowserSignalsForTest(tab)).toBe(
       "active=yes stop=yes thinking=yes completeUi=no send=no",
+    );
+  });
+
+  test("prints blocker details separately from Stop visibility", () => {
+    const tab = {
+      blocker: "login-expired",
+      stopExists: true,
+      state: "blocked",
+      authenticated: false,
+      sendExists: false,
+      promptReady: false,
+      assistantCount: 1,
+    } as Pick<
+      ChatGptTabSummary,
+      | "blocker"
+      | "stopExists"
+      | "state"
+      | "authenticated"
+      | "sendExists"
+      | "promptReady"
+      | "assistantCount"
+    >;
+    expect(isBrowserTabActiveForTest(tab)).toBe(false);
+    expect(formatBrowserSignalsForTest(tab)).toBe(
+      "active=no stop=yes thinking=yes completeUi=no send=no blocker=login-expired",
     );
   });
 

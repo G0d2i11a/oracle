@@ -60,6 +60,9 @@ export interface ChatGptTabSummary {
   conversationId?: string;
   fingerprint: string;
   state: BrowserHarvestState;
+  blocker?: string;
+  deepResearchStopExists?: boolean;
+  deepResearchActive?: boolean;
   error?: string;
   lastAssistantMarkdown: string | null;
   lastAssistantMessageId?: string;
@@ -243,6 +246,17 @@ function buildTabInspectionExpression(): string {
         const label = normalize(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title'));
         return LOGIN_CTA.test(label);
       });
+      const pageText = normalizeLower(document.body?.innerText || '');
+      const loginExpired = Boolean(
+        document.querySelector('[data-testid*="expired-session"], [id*="expired-session"], [class*="expired-session"]'),
+      ) || (
+        pageText.includes('your session has expired') &&
+        (pageText.includes('log in') || pageText.includes('login') || pageText.includes('sign in'))
+      );
+      const accountBlocked = pageText.includes('suspicious activity detected') &&
+        pageText.includes('secure your account') &&
+        pageText.includes('regain access');
+      const blocker = loginExpired ? 'login-expired' : accountBlocked ? 'account-blocked' : '';
       const mainStopExists = hasVisibleStopButton();
       const sendButton = firstVisible(SEND_SELECTORS);
       const sendExists = Boolean(sendButton);
@@ -384,15 +398,11 @@ function buildTabInspectionExpression(): string {
       const lastAssistantText = assistantTexts[assistantTexts.length - 1] || answerTexts[answerTexts.length - 1] || '';
       const lastUserText = userTexts[userTexts.length - 1] || '';
       const completionVisible = hasCompletionUi();
-      const lastAssistantLowSignal =
-        !normalize(lastAssistantText) ||
-        ['chatgpt said:', 'chatgpt said', 'called tool', 'used tool'].includes(normalizeLower(lastAssistantText));
-      const deepResearchFrameActive =
-        hasLargeDeepResearchFrame() && !completionVisible && lastAssistantLowSignal;
+      const deepResearchFrameActive = hasLargeDeepResearchFrame() && !completionVisible;
       const stopExists = mainStopExists || deepResearchFrameActive;
       const thinkingActive =
         stopExists || deepResearchFrameActive || isProgressOnlyText(lastAssistantText) || hasThinkingIndicator();
-      const authenticated = !loginButtonExists && (promptReady || sendExists || stopExists || assistantCount > 0);
+      const authenticated = !blocker && !loginButtonExists && (promptReady || sendExists || stopExists || assistantCount > 0);
       return {
         title: normalize(document.title),
         url: location.href,
@@ -411,12 +421,289 @@ function buildTabInspectionExpression(): string {
         lastUserText,
         visibilityState: document.visibilityState,
         focused: Boolean(document.hasFocus?.()),
+        blocker,
+        deepResearchStopExists: false,
+        deepResearchActive: deepResearchFrameActive,
       };
     })()`;
 }
 
 export function buildTabInspectionExpressionForTest(): string {
   return buildTabInspectionExpression();
+}
+
+interface DeepResearchLiveSignals {
+  stopExists: boolean;
+  active: boolean;
+  textLength: number;
+}
+
+interface DeepResearchTargetInfo {
+  targetId?: string;
+  type?: string;
+  url?: string;
+  title?: string;
+  parentFrameId?: string;
+  openerId?: string;
+}
+
+interface DeepResearchFrameTree {
+  frame?: { id?: string; url?: string; name?: string };
+  childFrames?: DeepResearchFrameTree[];
+}
+
+type RawCdpClient = Awaited<ReturnType<typeof CDP>> & {
+  send?: (
+    method: string,
+    params?: Record<string, unknown>,
+    sessionId?: string,
+  ) => Promise<unknown>;
+};
+type RawCdpSendClient = Awaited<ReturnType<typeof CDP>> & {
+  send: (
+    method: string,
+    params?: Record<string, unknown>,
+    sessionId?: string,
+  ) => Promise<unknown>;
+};
+
+function isDeepResearchTargetInfo(target: DeepResearchTargetInfo): boolean {
+  const label = `${target.url ?? ""} ${target.title ?? ""}`.toLowerCase();
+  return (
+    label.includes("connector_openai_deep_research") ||
+    label.includes("internal://deep-research") ||
+    label.includes("deep-research") ||
+    label.includes("deep research")
+  );
+}
+
+function collectFrameIds(tree: DeepResearchFrameTree | undefined): string[] {
+  if (!tree?.frame) {
+    return [];
+  }
+  const ids = tree.frame.id ? [tree.frame.id] : [];
+  for (const child of tree.childFrames ?? []) {
+    ids.push(...collectFrameIds(child));
+  }
+  return ids;
+}
+
+function collectDeepResearchFrameIds(tree: DeepResearchFrameTree | undefined): string[] {
+  if (!tree?.frame) {
+    return [];
+  }
+  const ids: string[] = [];
+  const label = `${tree.frame.url ?? ""} ${tree.frame.name ?? ""}`.toLowerCase();
+  if (
+    label.includes("connector_openai_deep_research") ||
+    label.includes("internal://deep-research") ||
+    label.includes("deep-research") ||
+    label.includes("deep research")
+  ) {
+    if (tree.frame.id) {
+      ids.push(tree.frame.id);
+    }
+  }
+  for (const child of tree.childFrames ?? []) {
+    ids.push(...collectDeepResearchFrameIds(child));
+  }
+  return ids;
+}
+
+function mergeDeepResearchSignals(
+  left: DeepResearchLiveSignals | null,
+  right: DeepResearchLiveSignals | null,
+): DeepResearchLiveSignals | null {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  return {
+    stopExists: left.stopExists || right.stopExists,
+    active: left.active || right.active,
+    textLength: Math.max(left.textLength, right.textLength),
+  };
+}
+
+async function inspectDeepResearchLiveSignals(
+  client: Awaited<ReturnType<typeof CDP>>,
+  parentTargetId: string,
+): Promise<DeepResearchLiveSignals | null> {
+  const maybeRawClient = client as RawCdpClient;
+  if (typeof maybeRawClient.send !== "function") {
+    return null;
+  }
+  const rawClient = maybeRawClient as RawCdpSendClient;
+
+  let best = await inspectCurrentPageDeepResearchFrames(rawClient);
+  if (best?.stopExists) {
+    return best;
+  }
+
+  const targets = (await rawClient.send("Target.getTargets", {}).catch(() => null)) as
+    | { targetInfos?: DeepResearchTargetInfo[] }
+    | null;
+  for (const target of targets?.targetInfos ?? []) {
+    const scopedToCurrentTab =
+      target.parentFrameId === parentTargetId || target.openerId === parentTargetId;
+    if (!target.targetId || !scopedToCurrentTab || !isDeepResearchTargetInfo(target)) {
+      continue;
+    }
+    const attached = (await rawClient
+      .send("Target.attachToTarget", { targetId: target.targetId, flatten: true })
+      .catch(() => null)) as { sessionId?: string } | null;
+    if (!attached?.sessionId) {
+      continue;
+    }
+    try {
+      const signal = await inspectDeepResearchSession(rawClient, attached.sessionId);
+      best = mergeDeepResearchSignals(best, signal);
+      if (best?.stopExists) {
+        return best;
+      }
+    } finally {
+      await rawClient
+        .send("Target.detachFromTarget", { sessionId: attached.sessionId })
+        .catch(() => undefined);
+    }
+  }
+  return best;
+}
+
+async function inspectCurrentPageDeepResearchFrames(
+  rawClient: RawCdpSendClient,
+): Promise<DeepResearchLiveSignals | null> {
+  await rawClient.send("Page.enable", {}).catch(() => undefined);
+  const frameTree = (await rawClient
+    .send("Page.getFrameTree", {})
+    .catch(() => null)) as { frameTree?: DeepResearchFrameTree } | null;
+  let best: DeepResearchLiveSignals | null = null;
+  for (const frameId of collectDeepResearchFrameIds(frameTree?.frameTree)) {
+    const world = (await rawClient
+      .send("Page.createIsolatedWorld", {
+        frameId,
+        worldName: "oracle-live-deep-research-status",
+        grantUniveralAccess: true,
+      })
+      .catch(() => null)) as { executionContextId?: number } | null;
+    if (typeof world?.executionContextId !== "number") {
+      continue;
+    }
+    const signal = await evaluateDeepResearchLiveSignals(rawClient, undefined, world.executionContextId);
+    best = mergeDeepResearchSignals(best, signal);
+    if (best?.stopExists) {
+      return best;
+    }
+  }
+  return best;
+}
+
+async function inspectDeepResearchSession(
+  rawClient: RawCdpSendClient,
+  sessionId: string,
+): Promise<DeepResearchLiveSignals | null> {
+  await rawClient.send("Runtime.enable", {}, sessionId).catch(() => undefined);
+  await rawClient.send("Page.enable", {}, sessionId).catch(() => undefined);
+
+  let best = await evaluateDeepResearchLiveSignals(rawClient, sessionId);
+  const frameTree = (await rawClient
+    .send("Page.getFrameTree", {}, sessionId)
+    .catch(() => null)) as { frameTree?: DeepResearchFrameTree } | null;
+  for (const frameId of collectFrameIds(frameTree?.frameTree)) {
+    const world = (await rawClient
+      .send(
+        "Page.createIsolatedWorld",
+        {
+          frameId,
+          worldName: "oracle-live-deep-research-status",
+          grantUniveralAccess: true,
+        },
+        sessionId,
+      )
+      .catch(() => null)) as { executionContextId?: number } | null;
+    if (typeof world?.executionContextId !== "number") {
+      continue;
+    }
+    const signal = await evaluateDeepResearchLiveSignals(rawClient, sessionId, world.executionContextId);
+    best = mergeDeepResearchSignals(best, signal);
+    if (best?.stopExists) {
+      return best;
+    }
+  }
+  return best;
+}
+
+async function evaluateDeepResearchLiveSignals(
+  rawClient: RawCdpSendClient,
+  sessionId?: string,
+  contextId?: number,
+): Promise<DeepResearchLiveSignals | null> {
+  const response = (await rawClient
+    .send(
+      "Runtime.evaluate",
+      {
+        expression: buildDeepResearchLiveSignalsExpression(),
+        returnByValue: true,
+        ...(typeof contextId === "number" ? { contextId } : {}),
+      },
+      sessionId,
+    )
+    .catch(() => null)) as { result?: { value?: DeepResearchLiveSignals } } | null;
+  return response?.result?.value ?? null;
+}
+
+function buildDeepResearchLiveSignalsExpression(): string {
+  return `(() => {
+    ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
+    const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+    const normalizeLower = (value) => normalize(value).toLowerCase();
+    const isVisible = (node) => {
+      if (!(node instanceof Element)) return false;
+      const rect = node.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+    };
+    const text = normalize(document.body?.innerText || '');
+    const lowerText = normalizeLower(text);
+    const completed = /\\b(research completed|badanie ukończone)\\b/i.test(text);
+    const progressText = !completed && (
+      lowerText.includes('researching') ||
+      lowerText.includes('searching') ||
+      lowerText.includes('searches') ||
+      lowerText.includes('looking for') ||
+      lowerText.includes('reading') ||
+      lowerText.includes('sources') ||
+      lowerText.includes('citations') ||
+      lowerText.includes('analyzing') ||
+      lowerText.includes('analysing')
+    );
+    const iconOnlyStopExists = progressText && Array.from(document.querySelectorAll('button,[role="button"]')).some((node) => {
+      if (!(node instanceof HTMLElement) || !isVisible(node)) return false;
+      const label = normalizeLower([
+        node.textContent,
+        node.getAttribute('aria-label'),
+        node.getAttribute('title'),
+        node.getAttribute('data-testid'),
+      ].filter(Boolean).join(' '));
+      if (/copy|share|close|dismiss|open|menu|download|citation|source/.test(label)) return false;
+      if (label && !/\\b(stop|pause|interrupt)\\b|停止|暂停|中止|终止/.test(label)) return false;
+      const rect = node.getBoundingClientRect();
+      const textOnly = normalize(node.textContent);
+      const hasIcon = Boolean(node.querySelector('svg, [class*="icon"]'));
+      return textOnly.length === 0 &&
+        hasIcon &&
+        rect.width >= 16 &&
+        rect.width <= 64 &&
+        rect.height >= 16 &&
+        rect.height <= 64;
+    });
+    const stopExists = hasVisibleStopButton() || iconOnlyStopExists;
+    const active = stopExists || progressText;
+    return { stopExists, active, textLength: text.length };
+  })()`;
 }
 
 export async function listChatGptTargets(options: HostPort = {}): Promise<ChromeTarget[]> {
@@ -482,7 +769,13 @@ export async function inspectChatGptTab(
       lastUserText?: string;
       visibilityState?: string;
       focused?: boolean;
+      blocker?: string;
+      deepResearchStopExists?: boolean;
+      deepResearchActive?: boolean;
     };
+    const deepResearchSignals = await inspectDeepResearchLiveSignals(client, targetId).catch(
+      () => null,
+    );
     const snapshot = await readAssistantSnapshot(Runtime).catch(() => null);
     const snapshotText =
       typeof snapshot?.text === "string" && snapshot.text.trim().length > 0
@@ -497,6 +790,13 @@ export async function inspectChatGptTab(
     const openingLine =
       String(info.openingLine ?? "").trim() || firstNonEmptyLine(firstAssistantText);
     const lastUserText = String(info.lastUserText ?? "").trim();
+    const blocker = String(info.blocker ?? "").trim() || undefined;
+    const deepResearchStopExists = Boolean(
+      info.deepResearchStopExists || deepResearchSignals?.stopExists,
+    );
+    const deepResearchActive = Boolean(info.deepResearchActive || deepResearchSignals?.active);
+    const stopExists = Boolean(info.stopExists || deepResearchStopExists || deepResearchActive);
+    const thinkingActive = Boolean(info.thinkingActive || stopExists || deepResearchActive);
     const summary: ChatGptTabSummary = {
       host,
       port,
@@ -504,13 +804,13 @@ export async function inspectChatGptTab(
       title: normalizeTitle(info.title ?? target.title ?? ""),
       url: normalizeUrl(info.url ?? target.url ?? ""),
       currentModelLabel: normalizeTitle(info.currentModelLabel ?? ""),
-      stopExists: Boolean(info.stopExists),
-      thinkingActive: Boolean(info.thinkingActive),
+      stopExists,
+      thinkingActive,
       completionVisible: Boolean(info.completionVisible),
       sendExists: Boolean(info.sendExists),
       promptReady: Boolean(info.promptReady),
       loginButtonExists: Boolean(info.loginButtonExists),
-      authenticated: Boolean(info.authenticated),
+      authenticated: Boolean(!blocker && info.authenticated),
       assistantCount: Number.isFinite(info.assistantCount) ? Number(info.assistantCount) : 0,
       firstAssistantText,
       firstAssistantSnippet: trimToSnippet(firstAssistantText),
@@ -524,6 +824,9 @@ export async function inspectChatGptTab(
       conversationId: extractConversationIdFromUrl(info.url ?? target.url ?? ""),
       fingerprint: "",
       state: "detached",
+      blocker,
+      deepResearchStopExists,
+      deepResearchActive,
       lastAssistantMarkdown: null,
       lastAssistantMessageId:
         typeof snapshot?.messageId === "string" ? snapshot.messageId : undefined,
@@ -540,6 +843,7 @@ export async function inspectChatGptTab(
 export function classifyTabState(
   summary: Pick<
     ChatGptTabSummary,
+    | "blocker"
     | "authenticated"
     | "stopExists"
     | "thinkingActive"
@@ -547,8 +851,11 @@ export function classifyTabState(
     | "sendExists"
     | "promptReady"
     | "assistantCount"
-  >,
+>,
 ): BrowserHarvestState {
+  if (summary?.blocker) {
+    return "blocked";
+  }
   if (!summary?.authenticated) {
     return "detached";
   }
@@ -597,6 +904,9 @@ export async function collectChatGptTabs(options: HostPort = {}): Promise<ChatGp
         conversationId: extractConversationIdFromUrl(target.url ?? ""),
         fingerprint: "",
         state: "detached",
+        blocker: undefined,
+        deepResearchStopExists: false,
+        deepResearchActive: false,
         error: error instanceof Error ? error.message : String(error),
         lastAssistantMarkdown: null,
       });
@@ -748,6 +1058,9 @@ export async function harvestChatGptTab(
       harvested.assistantCount = followup.assistantCount;
       harvested.authenticated = followup.authenticated;
       harvested.loginButtonExists = followup.loginButtonExists;
+      harvested.blocker = followup.blocker;
+      harvested.deepResearchStopExists = followup.deepResearchStopExists;
+      harvested.deepResearchActive = followup.deepResearchActive;
       harvested.lastUserText = followup.lastUserText;
       harvested.lastUserSnippet = followup.lastUserSnippet;
       harvested.fingerprint = followup.fingerprint;
@@ -774,6 +1087,7 @@ export function formatBrowserTabState(
   tab: Pick<
     ChatGptTabSummary,
     | "state"
+    | "blocker"
     | "authenticated"
     | "stopExists"
     | "thinkingActive"
