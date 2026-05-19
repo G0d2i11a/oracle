@@ -63,6 +63,7 @@ export interface ChatGptTabSummary {
   blocker?: string;
   deepResearchStopExists?: boolean;
   deepResearchActive?: boolean;
+  deepResearchResultText?: string;
   error?: string;
   lastAssistantMarkdown: string | null;
   lastAssistantMessageId?: string;
@@ -130,6 +131,41 @@ function firstNonEmptyLine(text: string): string {
     }
   }
   return "";
+}
+
+function isLowSignalAssistantText(text: string | null | undefined): boolean {
+  const normalized = String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return (
+    !normalized ||
+    normalized.length <= 2 ||
+    normalized === "the" ||
+    normalized === "chatgpt said:" ||
+    normalized === "chatgpt said" ||
+    normalized === "called tool" ||
+    normalized === "used tool"
+  );
+}
+
+function shouldPreferDeepResearchResult(
+  currentText: string | null | undefined,
+  deepResearchText: string | null | undefined,
+): boolean {
+  const deepText = String(deepResearchText ?? "").trim();
+  if (deepText.length < 40) {
+    return false;
+  }
+  const current = String(currentText ?? "").trim();
+  return isLowSignalAssistantText(current) || deepText.length >= current.length + 20;
+}
+
+export function shouldPreferDeepResearchResultForTest(
+  currentText: string | null | undefined,
+  deepResearchText: string | null | undefined,
+): boolean {
+  return shouldPreferDeepResearchResult(currentText, deepResearchText);
 }
 
 function normalizeHostPort(input: HostPort = {}): Required<HostPort> {
@@ -435,7 +471,10 @@ export function buildTabInspectionExpressionForTest(): string {
 interface DeepResearchLiveSignals {
   stopExists: boolean;
   active: boolean;
+  completed: boolean;
   textLength: number;
+  text?: string;
+  html?: string;
 }
 
 interface DeepResearchTargetInfo {
@@ -523,7 +562,16 @@ function mergeDeepResearchSignals(
   return {
     stopExists: left.stopExists || right.stopExists,
     active: left.active || right.active,
+    completed: left.completed || right.completed,
     textLength: Math.max(left.textLength, right.textLength),
+    text:
+      (right.text?.length ?? 0) > (left.text?.length ?? 0)
+        ? right.text
+        : left.text,
+    html:
+      (right.text?.length ?? 0) > (left.text?.length ?? 0)
+        ? right.html
+        : left.html,
   };
 }
 
@@ -666,9 +714,50 @@ function buildDeepResearchLiveSignalsExpression(): string {
       const style = window.getComputedStyle(node);
       return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
     };
-    const text = normalize(document.body?.innerText || '');
+    const rawText = String(document.body?.innerText || '');
+    const html = String(document.body?.innerHTML || '');
+    const text = normalize(rawText);
     const lowerText = normalizeLower(text);
-    const completed = /\\b(research completed|badanie ukończone)\\b/i.test(text);
+    const isPlaceholder = (line) => /^(called tool|used tool|użyto narzędzia|narzędzie wywołane)$/i.test(line);
+    const isCompletionLine = (line) =>
+      /^(research completed|badanie ukończone)\\b/i.test(line);
+    const isCounterLine = (line) =>
+      /^(\\d+\\s+)?(citation|citations|source|sources|search|searches|cytat|cytaty|cytatów|źródło|źródła|wyszukiwanie|wyszukiwania|wyszukiwań)\\b/i.test(line);
+    const normalizeReportText = (value) => {
+      let report = String(value || '').replace(/\\r\\n?/g, '\\n').trim();
+      report = report.replace(/^\\s*research completed\\b[\\s\\S]{0,2400}?\\bsearches\\b\\s*/i, '');
+      const lines = report
+        .split(/\\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter((line) => !/^\\d+$/.test(line));
+      const reportIndex = lines.findIndex((line) => /deep research report/i.test(line));
+      const candidates = reportIndex >= 0 ? lines.slice(reportIndex + 1) : lines;
+      let started = false;
+      const reportLines = candidates.filter((line) => {
+        if (!started) {
+          if (
+            /deep research report/i.test(line) ||
+            isCompletionLine(line) ||
+            isCounterLine(line) ||
+            isPlaceholder(line)
+          ) {
+            return false;
+          }
+          started = true;
+        }
+        return true;
+      });
+      if (reportLines.length > 1 && reportLines[0] === reportLines[1]) {
+        reportLines.shift();
+      }
+      return reportLines.join('\\n').trim();
+    };
+    const reportText = normalizeReportText(rawText);
+    const completed =
+      /\\b(research completed|badanie ukończone)\\b/i.test(rawText) &&
+      reportText.length >= 40 &&
+      !isPlaceholder(reportText);
     const progressText = !completed && (
       lowerText.includes('researching') ||
       lowerText.includes('searching') ||
@@ -702,7 +791,14 @@ function buildDeepResearchLiveSignalsExpression(): string {
     });
     const stopExists = hasVisibleStopButton() || iconOnlyStopExists;
     const active = stopExists || progressText;
-    return { stopExists, active, textLength: text.length };
+    return {
+      stopExists,
+      active,
+      completed,
+      textLength: reportText.length || text.length,
+      text: completed ? reportText : undefined,
+      html: completed ? html : undefined,
+    };
   })()`;
 }
 
@@ -791,12 +887,19 @@ export async function inspectChatGptTab(
       String(info.openingLine ?? "").trim() || firstNonEmptyLine(firstAssistantText);
     const lastUserText = String(info.lastUserText ?? "").trim();
     const blocker = String(info.blocker ?? "").trim() || undefined;
+    const deepResearchResultText = String(deepResearchSignals?.text ?? "").trim() || undefined;
     const deepResearchStopExists = Boolean(
       info.deepResearchStopExists || deepResearchSignals?.stopExists,
     );
     const deepResearchActive = Boolean(info.deepResearchActive || deepResearchSignals?.active);
     const stopExists = Boolean(info.stopExists || deepResearchStopExists || deepResearchActive);
     const thinkingActive = Boolean(info.thinkingActive || stopExists || deepResearchActive);
+    const effectiveLastAssistantText = shouldPreferDeepResearchResult(
+      lastAssistantText,
+      deepResearchResultText,
+    )
+      ? (deepResearchResultText as string)
+      : lastAssistantText;
     const summary: ChatGptTabSummary = {
       host,
       port,
@@ -815,8 +918,8 @@ export async function inspectChatGptTab(
       firstAssistantText,
       firstAssistantSnippet: trimToSnippet(firstAssistantText),
       openingLine,
-      lastAssistantText,
-      lastAssistantSnippet: trimToSnippet(lastAssistantText),
+      lastAssistantText: effectiveLastAssistantText,
+      lastAssistantSnippet: trimToSnippet(effectiveLastAssistantText),
       lastUserText,
       lastUserSnippet: trimToSnippet(lastUserText),
       focused: Boolean(info.focused),
@@ -827,6 +930,7 @@ export async function inspectChatGptTab(
       blocker,
       deepResearchStopExists,
       deepResearchActive,
+      deepResearchResultText,
       lastAssistantMarkdown: null,
       lastAssistantMessageId:
         typeof snapshot?.messageId === "string" ? snapshot.messageId : undefined,
@@ -907,6 +1011,7 @@ export async function collectChatGptTabs(options: HostPort = {}): Promise<ChatGp
         blocker: undefined,
         deepResearchStopExists: false,
         deepResearchActive: false,
+        deepResearchResultText: undefined,
         error: error instanceof Error ? error.message : String(error),
         lastAssistantMarkdown: null,
       });
@@ -1004,7 +1109,6 @@ export async function harvestChatGptTab(
       typeof snapshot?.text === "string" && snapshot.text.trim().length > 0
         ? snapshot.text.trim()
         : resolved.lastAssistantText;
-    const lastAssistantText = latestText ?? "";
     const nowSummary = await inspectChatGptTab({
       host,
       port,
@@ -1015,14 +1119,22 @@ export async function harvestChatGptTab(
         type: "page",
       },
     });
+    const deepResearchResultText = nowSummary.deepResearchResultText ?? "";
+    const lastAssistantText = shouldPreferDeepResearchResult(latestText, deepResearchResultText)
+      ? deepResearchResultText
+      : (latestText ?? "");
+    const assistantOutput = shouldPreferDeepResearchResult(assistantMarkdown, deepResearchResultText)
+      ? deepResearchResultText
+      : assistantMarkdown;
     const harvested: ChatGptTabSummary = {
       ...nowSummary,
-      completionVisible: nowSummary.completionVisible || Boolean(assistantMarkdown),
+      completionVisible:
+        nowSummary.completionVisible || Boolean(assistantOutput) || Boolean(deepResearchResultText),
       lastAssistantText,
       lastAssistantSnippet: trimToSnippet(
-        resolveAssistantSnippetText(lastAssistantText, assistantMarkdown),
+        resolveAssistantSnippetText(lastAssistantText, assistantOutput),
       ),
-      lastAssistantMarkdown: assistantMarkdown ?? (lastAssistantText || null),
+      lastAssistantMarkdown: assistantOutput ?? (lastAssistantText || null),
       lastAssistantMessageId:
         typeof snapshot?.messageId === "string"
           ? snapshot.messageId

@@ -42,6 +42,7 @@ import {
   resolveChatGptTabFromSummariesForTest,
   resolveAssistantSnippetTextForTest,
   sessionMatchesTab,
+  shouldPreferDeepResearchResultForTest,
   type ChatGptTabSummary,
 } from "../../src/browser/liveTabs.js";
 import type { SessionMetadata } from "../../src/sessionStore.js";
@@ -164,6 +165,16 @@ describe("liveTabs helpers", () => {
     expect(expression).toContain("your session has expired");
     expect(expression).toContain("const blocker = loginExpired ? 'login-expired'");
     expect(expression).toContain("authenticated = !blocker");
+  });
+
+  test("prefers completed Deep Research card text over placeholder assistant text", () => {
+    expect(
+      shouldPreferDeepResearchResultForTest(
+        "ChatGPT said:",
+        "trq212 Live Social Reference Update Bundle\n\nCrawl result summary with enough detail.",
+      ),
+    ).toBe(true);
+    expect(shouldPreferDeepResearchResultForTest("Complete assistant answer", "")).toBe(false);
   });
 
   test("inspects first/opening and last assistant snippets", async () => {
