@@ -81,6 +81,116 @@ describe("shouldPreserveBrowserOnErrorForTest", () => {
   });
 });
 
+describe("visible ChatGPT error retry policy", () => {
+  test("retries a visible ChatGPT error with a fresh attempt", async () => {
+    const logger = vi.fn();
+    const result = {
+      answerText: "ok",
+      answerMarkdown: "ok",
+      tookMs: 1,
+      answerTokens: 1,
+      answerChars: 2,
+    };
+    let attempts = 0;
+
+    await expect(
+      __test__.runBrowserModeWithVisibleErrorRetry({ prompt: "hello", log: logger }, async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new BrowserAutomationError("visible error", {
+            stage: "chatgpt-visible-error",
+            code: "visible-chatgpt-error",
+            message: "Something went wrong.",
+          });
+        }
+        return result;
+      }),
+    ).resolves.toBe(result);
+
+    expect(attempts).toBe(2);
+    expect(logger).toHaveBeenCalledWith(
+      "[browser] ChatGPT visible error detected (Something went wrong.); retrying in a fresh tab (attempt 2/2).",
+    );
+  });
+
+  test("uses one fresh retry by default", () => {
+    const previous = process.env.ORACLE_BROWSER_VISIBLE_ERROR_RETRIES;
+    delete process.env.ORACLE_BROWSER_VISIBLE_ERROR_RETRIES;
+    try {
+      expect(__test__.resolveVisibleChatGptErrorMaxAttempts()).toBe(2);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ORACLE_BROWSER_VISIBLE_ERROR_RETRIES;
+      } else {
+        process.env.ORACLE_BROWSER_VISIBLE_ERROR_RETRIES = previous;
+      }
+    }
+  });
+
+  test("does not retry when pinned to an existing browser tab", () => {
+    expect(
+      __test__.shouldRetryVisibleChatGptError({
+        prompt: "hello",
+        config: { browserTabRef: "target-1" },
+      }),
+    ).toBe(false);
+    expect(__test__.shouldRetryVisibleChatGptError({ prompt: "hello" })).toBe(true);
+  });
+
+  test("retries an unsaved root-tab stall with a fresh attempt", async () => {
+    const logger = vi.fn();
+    const result = {
+      answerText: "ok",
+      answerMarkdown: "ok",
+      tookMs: 1,
+      answerTokens: 1,
+      answerChars: 2,
+    };
+    let attempts = 0;
+
+    await expect(
+      __test__.runBrowserModeWithVisibleErrorRetry({ prompt: "hello", log: logger }, async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new BrowserAutomationError("root stall", {
+            stage: "chatgpt-root-conversation-stall",
+            code: "chatgpt-root-conversation-stall",
+            reason: "chatgpt-root-conversation-stall",
+            conversationUrl: "https://chatgpt.com/",
+          });
+        }
+        return result;
+      }),
+    ).resolves.toBe(result);
+
+    expect(attempts).toBe(2);
+    expect(logger).toHaveBeenCalledWith(
+      "[browser] ChatGPT stayed on an unsaved root tab after submit (https://chatgpt.com/); retrying in a fresh tab (attempt 2/2).",
+    );
+  });
+
+  test("detects ChatGPT non-conversation URLs without flagging saved conversations", () => {
+    expect(__test__.isChatGptNonConversationUrl("https://chatgpt.com/")).toBe(true);
+    expect(__test__.isChatGptNonConversationUrl("https://chatgpt.com/g/demo/project")).toBe(true);
+    expect(__test__.isChatGptNonConversationUrl("https://chatgpt.com/c/abc-123")).toBe(false);
+    expect(__test__.isChatGptNonConversationUrl("https://example.com/")).toBe(false);
+  });
+
+  test("uses one root-stall retry by default", () => {
+    const previous = process.env.ORACLE_BROWSER_ROOT_STALL_RETRIES;
+    delete process.env.ORACLE_BROWSER_ROOT_STALL_RETRIES;
+    try {
+      expect(__test__.resolveRootConversationStallMaxAttempts()).toBe(2);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ORACLE_BROWSER_ROOT_STALL_RETRIES;
+      } else {
+        process.env.ORACLE_BROWSER_ROOT_STALL_RETRIES = previous;
+      }
+    }
+  });
+});
+
 describe("browser answer finalization guard", () => {
   test("rejects stop-visible completion even with answer text", () => {
     const verdict = __test__.validateBrowserAnswerFinalization({

@@ -54,7 +54,7 @@ import {
   waitForDeepResearchCompletion,
   waitForResearchPlanAutoConfirm,
 } from "./actions/deepResearch.js";
-import { estimateTokenCount, withRetries, delay } from "./utils.js";
+import { estimateTokenCount, withRetries, delay, parseDuration } from "./utils.js";
 import { formatElapsed } from "../oracle/format.js";
 import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR, DEFAULT_MODEL_STRATEGY } from "./constants.js";
 import type { LaunchedChrome } from "chrome-launcher";
@@ -93,6 +93,7 @@ import {
   archiveChatGptConversation,
   resolveBrowserArchiveDecision,
 } from "./actions/archiveConversation.js";
+import { isVisibleChatGptError } from "./actions/chatgptErrors.js";
 import { describeBrowserControlPlan, formatBrowserControlPlan } from "./controlPlan.js";
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from "./types.js";
@@ -106,6 +107,11 @@ export {
   sanitizeThinkingText,
   startThinkingStatusMonitorForTest,
 } from "./actions/thinkingStatus.js";
+export {
+  buildVisibleChatGptErrorExpressionForTest,
+  formatVisibleChatGptErrorLog,
+  readVisibleChatGptErrorForTest,
+} from "./actions/chatgptErrors.js";
 
 function redactBrowserConfigForDebugLog(config: Record<string, unknown>): Record<string, unknown> {
   const redacted = { ...config };
@@ -1085,6 +1091,134 @@ function shouldCloseOwnedRunTargetAfterRun(options: {
 }
 
 export async function runBrowserMode(options: BrowserRunOptions): Promise<BrowserRunResult> {
+  return runBrowserModeWithVisibleErrorRetry(options, runBrowserModeAttempt);
+}
+
+type FreshTabRetryReason = "visible-chatgpt-error" | "root-conversation-stall";
+
+async function runBrowserModeWithVisibleErrorRetry(
+  options: BrowserRunOptions,
+  runAttempt: (attemptOptions: BrowserRunOptions) => Promise<BrowserRunResult>,
+): Promise<BrowserRunResult> {
+  const maxAttempts = Math.max(
+    resolveVisibleChatGptErrorMaxAttempts(),
+    resolveRootConversationStallMaxAttempts(),
+  );
+  const logger: BrowserLogger = options.log ?? ((_message: string) => {});
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await runAttempt(options);
+    } catch (error) {
+      const retryReason = classifyFreshTabRetryReason(error);
+      if (attempt < maxAttempts && retryReason && shouldRetryVisibleChatGptError(options)) {
+        logger(formatFreshTabRetryLog(error, retryReason, attempt + 1, maxAttempts));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new BrowserAutomationError("Browser mode exhausted visible ChatGPT error retries.", {
+    stage: "chatgpt-visible-error",
+    code: "visible-chatgpt-error",
+  });
+}
+
+function classifyFreshTabRetryReason(error: unknown): FreshTabRetryReason | null {
+  if (isVisibleChatGptError(error)) {
+    return "visible-chatgpt-error";
+  }
+  if (isRootConversationStallError(error)) {
+    return "root-conversation-stall";
+  }
+  return null;
+}
+
+function formatFreshTabRetryLog(
+  error: unknown,
+  reason: FreshTabRetryReason,
+  attempt: number,
+  maxAttempts: number,
+): string {
+  if (reason === "root-conversation-stall") {
+    const url =
+      error instanceof BrowserAutomationError && typeof error.details?.conversationUrl === "string"
+        ? error.details.conversationUrl
+        : "unknown";
+    return `[browser] ChatGPT stayed on an unsaved root tab after submit (${url}); retrying in a fresh tab (attempt ${attempt}/${maxAttempts}).`;
+  }
+  const message =
+    error instanceof BrowserAutomationError && typeof error.details?.message === "string"
+      ? error.details.message
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  return `[browser] ChatGPT visible error detected (${message}); retrying in a fresh tab (attempt ${attempt}/${maxAttempts}).`;
+}
+
+function resolveVisibleChatGptErrorMaxAttempts(): number {
+  const raw = process.env.ORACLE_BROWSER_VISIBLE_ERROR_RETRIES;
+  if (raw === undefined || raw.trim() === "") {
+    return 2;
+  }
+  const retries = Number(raw);
+  if (!Number.isFinite(retries) || retries <= 0) {
+    return 1;
+  }
+  return Math.max(1, Math.min(5, Math.floor(retries) + 1));
+}
+
+function resolveRootConversationStallMaxAttempts(): number {
+  const raw = process.env.ORACLE_BROWSER_ROOT_STALL_RETRIES;
+  if (raw === undefined || raw.trim() === "") {
+    return 2;
+  }
+  const retries = Number(raw);
+  if (!Number.isFinite(retries) || retries <= 0) {
+    return 1;
+  }
+  return Math.max(1, Math.min(5, Math.floor(retries) + 1));
+}
+
+function resolveRootConversationStallMs(): number | null {
+  const raw = process.env.ORACLE_BROWSER_ROOT_STALL_MS;
+  const ms = raw === undefined || raw.trim() === "" ? 90_000 : parseDuration(raw, Number.NaN);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return null;
+  }
+  return Math.max(15_000, Math.min(600_000, Math.floor(ms)));
+}
+
+function shouldRetryVisibleChatGptError(options: BrowserRunOptions): boolean {
+  return !options.config?.browserTabRef;
+}
+
+function isRootConversationStallError(error: unknown): error is BrowserAutomationError {
+  if (!(error instanceof BrowserAutomationError)) {
+    return false;
+  }
+  const details = error.details as
+    | { code?: unknown; reason?: unknown; stage?: unknown }
+    | undefined;
+  return (
+    details?.code === "chatgpt-root-conversation-stall" ||
+    details?.reason === "chatgpt-root-conversation-stall" ||
+    details?.stage === "chatgpt-root-conversation-stall"
+  );
+}
+
+function isChatGptNonConversationUrl(url: string | null | undefined): boolean {
+  if (!url || isConversationUrl(url)) {
+    return false;
+  }
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com");
+  } catch {
+    return false;
+  }
+}
+
+async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<BrowserRunResult> {
   const promptText = options.prompt?.trim();
   if (!promptText) {
     throw new Error("Prompt text is required when using browser mode.");
@@ -1273,6 +1407,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let removeDialogHandler: (() => void) | null = null;
   let appliedCookies = 0;
   let preserveBrowserOnError = false;
+  let closeOwnedTargetAfterRecoverableError = false;
 
   try {
     try {
@@ -1848,6 +1983,66 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         stopThinkingMonitor = null;
       }
     };
+    const rootStallMs = resolveRootConversationStallMs();
+    const buildRuntimeForRootStall = () => ({
+      chromePid: chrome.pid,
+      chromePort: chrome.port,
+      chromeHost,
+      userDataDir,
+      chromeTargetId: lastTargetId,
+      tabUrl: lastUrl,
+      conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+      controllerPid: process.pid,
+    });
+    const withRootConversationStallWatchdog = async <T>(
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      if (!rootStallMs || config.browserTabRef) {
+        return operation();
+      }
+      let timeout: NodeJS.Timeout | null = null;
+      const watchdog = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          void (async () => {
+            await updateConversationHint("root-stall-watchdog", 1_000).catch(() => false);
+            await captureRuntimeSnapshot().catch(() => undefined);
+            const currentUrl = await readConversationUrl(Runtime).catch(() => null);
+            if (currentUrl) {
+              lastUrl = currentUrl;
+            }
+            if (currentUrl && isConversationUrl(currentUrl)) {
+              return;
+            }
+            const active = await isBrowserStopButtonVisible(Runtime).catch(() => false);
+            if (!active || !isChatGptNonConversationUrl(currentUrl ?? lastUrl)) {
+              return;
+            }
+            await emitRuntimeHint();
+            reject(
+              new BrowserAutomationError(
+                `ChatGPT stayed on an unsaved root tab for ${formatElapsed(rootStallMs)} after submit; retrying in a fresh tab.`,
+                {
+                  stage: "chatgpt-root-conversation-stall",
+                  code: "chatgpt-root-conversation-stall",
+                  reason: "chatgpt-root-conversation-stall",
+                  conversationUrl: currentUrl ?? lastUrl ?? null,
+                  elapsedMs: rootStallMs,
+                  runtime: buildRuntimeForRootStall(),
+                },
+              ),
+            );
+          })().catch(reject);
+        }, rootStallMs);
+        timeout.unref?.();
+      });
+      try {
+        return await Promise.race([operation(), watchdog]);
+      } finally {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+      }
+    };
     const recheckDelayMs = Math.max(0, config.assistantRecheckDelayMs ?? 0);
     const recheckTimeoutMs = Math.max(0, config.assistantRecheckTimeoutMs ?? 0);
     const attemptAssistantRecheck = async () => {
@@ -1932,24 +2127,26 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       try {
         await updateConversationHint("assistant-wait", 15_000).catch(() => false);
         turnAnswer = await waitWithThinkingMonitor(() =>
-          raceWithDisconnect(
-            waitForAssistantOrGeneratedImageResponse({
-              Runtime,
-              waitForText: () =>
-                waitForAssistantResponseWithReload(
-                  Runtime,
-                  Page,
-                  config.timeoutMs,
-                  logger,
-                  baselineTurns ?? undefined,
-                  expectedConversationId(),
-                ),
-              timeoutMs: config.timeoutMs,
-              logger,
-              minTurnIndex: baselineTurns ?? undefined,
-              expectedConversationId: expectedConversationId(),
-              imageOutputRequested,
-            }),
+          withRootConversationStallWatchdog(() =>
+            raceWithDisconnect(
+              waitForAssistantOrGeneratedImageResponse({
+                Runtime,
+                waitForText: () =>
+                  waitForAssistantResponseWithReload(
+                    Runtime,
+                    Page,
+                    config.timeoutMs,
+                    logger,
+                    baselineTurns ?? undefined,
+                    expectedConversationId(),
+                  ),
+                timeoutMs: config.timeoutMs,
+                logger,
+                minTurnIndex: baselineTurns ?? undefined,
+                expectedConversationId: expectedConversationId(),
+                imageOutputRequested,
+              }),
+            ),
           ),
         );
       } catch (error) {
@@ -2396,6 +2593,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     };
   } catch (error) {
     const normalizedError = error instanceof Error ? error : new Error(String(error));
+    if (classifyFreshTabRetryReason(normalizedError)) {
+      closeOwnedTargetAfterRecoverableError = true;
+    }
     const socketClosed = connectionClosedUnexpectedly || isWebSocketClosureError(normalizedError);
     connectionClosedUnexpectedly = connectionClosedUnexpectedly || socketClosed;
     const preservedErrorKind = classifyPreservedBrowserError(normalizedError, config.headless);
@@ -2477,6 +2677,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         ownsTarget,
         keepBrowser: effectiveKeepBrowser,
       }) &&
+      isolatedTargetId &&
+      chrome?.port
+    ) {
+      await closeTab(chrome.port, isolatedTargetId, logger, chromeHost).catch(() => undefined);
+    } else if (
+      closeOwnedTargetAfterRecoverableError &&
+      ownsTarget &&
       isolatedTargetId &&
       chrome?.port
     ) {
@@ -2936,6 +3143,7 @@ async function runRemoteBrowserMode(
   let stopThinkingMonitor: (() => void) | null = null;
   let removeDialogHandler: (() => void) | null = null;
   let connection: Awaited<ReturnType<typeof connectToRemoteChrome>> | null = null;
+  let closeOwnedTargetAfterRecoverableError = false;
   const browserWSEndpoint = config.remoteChromeBrowserWSEndpoint ?? undefined;
   const chromeProfileRoot = config.remoteChromeProfileRoot ?? undefined;
 
@@ -3284,6 +3492,64 @@ async function runRemoteBrowserMode(
         stopThinkingMonitor = null;
       }
     };
+    const rootStallMs = resolveRootConversationStallMs();
+    const buildRuntimeForRootStall = () => ({
+      chromeHost: host,
+      chromePort: port,
+      chromeBrowserWSEndpoint: browserWSEndpoint,
+      chromeProfileRoot,
+      chromeTargetId: remoteTargetId ?? undefined,
+      tabUrl: lastUrl,
+      conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+      controllerPid: process.pid,
+    });
+    const withRootConversationStallWatchdog = async <T>(
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      if (!rootStallMs || config.browserTabRef) {
+        return operation();
+      }
+      let timeout: NodeJS.Timeout | null = null;
+      const watchdog = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          void (async () => {
+            const currentUrl = await readConversationUrl(Runtime).catch(() => null);
+            if (currentUrl) {
+              lastUrl = currentUrl;
+            }
+            if (currentUrl && isConversationUrl(currentUrl)) {
+              return;
+            }
+            const active = await isBrowserStopButtonVisible(Runtime).catch(() => false);
+            if (!active || !isChatGptNonConversationUrl(currentUrl ?? lastUrl)) {
+              return;
+            }
+            await emitRuntimeHint();
+            reject(
+              new BrowserAutomationError(
+                `ChatGPT stayed on an unsaved root tab for ${formatElapsed(rootStallMs)} after submit; retrying in a fresh tab.`,
+                {
+                  stage: "chatgpt-root-conversation-stall",
+                  code: "chatgpt-root-conversation-stall",
+                  reason: "chatgpt-root-conversation-stall",
+                  conversationUrl: currentUrl ?? lastUrl ?? null,
+                  elapsedMs: rootStallMs,
+                  runtime: buildRuntimeForRootStall(),
+                },
+              ),
+            );
+          })().catch(reject);
+        }, rootStallMs);
+        timeout.unref?.();
+      });
+      try {
+        return await Promise.race([operation(), watchdog]);
+      } finally {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+      }
+    };
     const recheckDelayMs = Math.max(0, config.assistantRecheckDelayMs ?? 0);
     const recheckTimeoutMs = Math.max(0, config.assistantRecheckTimeoutMs ?? 0);
     const attemptAssistantRecheck = async () => {
@@ -3370,23 +3636,25 @@ async function runRemoteBrowserMode(
           await emitRuntimeHint();
         }
         turnAnswer = await waitWithThinkingMonitor(() =>
-          waitForAssistantOrGeneratedImageResponse({
-            Runtime,
-            waitForText: () =>
-              waitForAssistantResponseWithReload(
-                Runtime,
-                Page,
-                config.timeoutMs,
-                logger,
-                baselineTurns ?? undefined,
-                expectedConversationId(),
-              ),
-            timeoutMs: config.timeoutMs,
-            logger,
-            minTurnIndex: baselineTurns ?? undefined,
-            expectedConversationId: expectedConversationId(),
-            imageOutputRequested,
-          }),
+          withRootConversationStallWatchdog(() =>
+            waitForAssistantOrGeneratedImageResponse({
+              Runtime,
+              waitForText: () =>
+                waitForAssistantResponseWithReload(
+                  Runtime,
+                  Page,
+                  config.timeoutMs,
+                  logger,
+                  baselineTurns ?? undefined,
+                  expectedConversationId(),
+                ),
+              timeoutMs: config.timeoutMs,
+              logger,
+              minTurnIndex: baselineTurns ?? undefined,
+              expectedConversationId: expectedConversationId(),
+              imageOutputRequested,
+            }),
+          ),
         );
       } catch (error) {
         if (isAssistantResponseTimeoutError(error)) {
@@ -3822,6 +4090,9 @@ async function runRemoteBrowserMode(
     };
   } catch (error) {
     const normalizedError = error instanceof Error ? error : new Error(String(error));
+    if (classifyFreshTabRetryReason(normalizedError)) {
+      closeOwnedTargetAfterRecoverableError = true;
+    }
     const socketClosed = connectionClosedUnexpectedly || isWebSocketClosureError(normalizedError);
     connectionClosedUnexpectedly = connectionClosedUnexpectedly || socketClosed;
 
@@ -3867,7 +4138,8 @@ async function runRemoteBrowserMode(
         runStatus,
         ownsTarget,
         keepBrowser: Boolean(config.keepBrowser),
-      })
+      }) ||
+      (closeOwnedTargetAfterRecoverableError && ownsTarget)
     ) {
       await closeRemoteChromeTarget(host, port, remoteTargetId ?? undefined, logger);
     }
@@ -3887,9 +4159,14 @@ export const __test__ = {
   isImageOnlyUiChromeText,
   listIgnoredRemoteChromeFlags,
   shouldCloseOwnedRunTargetAfterRun,
+  shouldRetryVisibleChatGptError,
+  runBrowserModeWithVisibleErrorRetry,
+  isChatGptNonConversationUrl,
   shouldAutoContinuePromiseOnlyResponse,
   validateBrowserAnswerFinalization,
   buildPromiseOnlyContinuationPromptForTest,
+  resolveVisibleChatGptErrorMaxAttempts,
+  resolveRootConversationStallMaxAttempts,
 };
 export { syncCookies } from "./cookies.js";
 export {
