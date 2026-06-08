@@ -87,4 +87,29 @@ describe("attach-running browser detection", () => {
       profileRoot: path.join(homeDir, "Library", "Application Support", "Dia", "User Data"),
     });
   });
+
+  test("discovers Oracle manual-login profile DevToolsActivePort files", async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-detect-"));
+    tempDirs.push(homeDir);
+    const profileDir = path.join(homeDir, ".oracle", "browser-profile");
+    await fs.mkdir(profileDir, { recursive: true });
+    await fs.writeFile(
+      path.join(profileDir, "DevToolsActivePort"),
+      "53193\n/devtools/browser/oracle\n",
+      "utf8",
+    );
+
+    const candidates = await discoverDevToolsActivePortCandidates({
+      host: "127.0.0.1",
+      platform: "darwin",
+      homeDir,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      port: 53193,
+      browserWSEndpoint: "ws://127.0.0.1:53193/devtools/browser/oracle",
+      profileRoot: profileDir,
+    });
+  });
 });

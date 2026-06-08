@@ -16,6 +16,7 @@ import {
   buildDeepResearchCompletionPollExpressionForTest,
   buildDeepResearchFrameStatusExpressionForTest,
   buildDeepResearchStatusExpressionForTest,
+  buildExpandDeepResearchReportCardExpressionForTest,
   findDeepResearchFrameIdForTest,
   isDeepResearchPlaceholderTextForTest,
   waitForResearchPlanAutoConfirm,
@@ -277,6 +278,10 @@ describe("waitForDeepResearchCompletion", () => {
       result: {
         value: { finished: true, stopVisible: false, textLength: 5000, hasIframe: false },
       },
+    });
+    // extractDeepResearchResult -> expandDeepResearchReportCard
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: { value: { clicked: false, reason: "no-expand-control" } },
     });
     // extractDeepResearchResult → readAssistantSnapshot
     mockRuntime.evaluate.mockResolvedValueOnce({
@@ -597,6 +602,9 @@ describe("waitForDeepResearchCompletion", () => {
         },
       })
       .mockResolvedValueOnce({
+        result: { value: { clicked: false, reason: "no-expand-control" } },
+      })
+      .mockResolvedValueOnce({
         result: {
           value: {
             text: "Deep Research final report content",
@@ -614,6 +622,85 @@ describe("waitForDeepResearchCompletion", () => {
 
     expect(result.text).toBe("Deep Research final report content");
     expect(mockLogger).toHaveBeenCalledWith(expect.stringContaining("still active; extending"));
+  });
+
+  it("expands a completed Deep Research report card before extracting text", async () => {
+    mockRuntime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            finished: false,
+            stopVisible: false,
+            textLength: 24,
+            hasIframe: false,
+            expandableReport: true,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        result: { value: { clicked: true, label: "View full report" } },
+      })
+      .mockResolvedValueOnce({
+        result: { value: { clicked: false, reason: "no-expand-control" } },
+      })
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            text: "Deep Research expanded report content with enough detail to be accepted.",
+            html: "<article>Deep Research expanded report content</article>",
+            turnId: "t1",
+            messageId: "m1",
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        result: { value: null },
+      });
+
+    const result = await waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 60_000);
+
+    expect(result.text).toContain("expanded report content");
+    expect(mockLogger).toHaveBeenCalledWith("Expanded Deep Research report card: View full report");
+  });
+
+  it("detects expandable Deep Research cards after Stop disappears", () => {
+    const expression = buildDeepResearchCompletionPollExpressionForTest(0);
+    const expandButton = {
+      textContent: "View full report",
+      getAttribute: (name: string) => (name === "aria-expanded" ? "false" : null),
+      hasAttribute: () => false,
+      getBoundingClientRect: () => ({ width: 120, height: 32 }),
+    };
+    const currentResearchTurn = {
+      textContent: "Research completed\nDeep Research",
+      innerText: "Research completed\nDeep Research",
+      getAttribute: (name: string) => (name === "data-message-author-role" ? "assistant" : null),
+      dataset: {},
+      querySelector: () => null,
+      querySelectorAll: (selector: string) =>
+        selector.includes("aria-expanded") ? [expandButton] : [],
+    };
+
+    const result = new vm.Script(expression).runInNewContext({
+      document: {
+        body: { innerText: "" },
+        querySelectorAll: (selector: string) => {
+          if (selector === "iframe") return [];
+          if (selector.includes("conversation-turn")) return [currentResearchTurn];
+          if (selector === '[data-message-author-role="assistant"], [data-turn="assistant"]') {
+            return [currentResearchTurn];
+          }
+          return [];
+        },
+      },
+      window: {
+        getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+      },
+    }) as { expandableReport?: boolean; finished?: boolean; stopVisible?: boolean };
+
+    expect(result.stopVisible).toBe(false);
+    expect(result.finished).toBe(false);
+    expect(result.expandableReport).toBe(true);
   });
 });
 

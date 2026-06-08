@@ -44,7 +44,8 @@ describe("runDryRunSummary", () => {
       },
       {
         readFilesImpl: async (_paths, readOptions) => {
-          receivedMaxFileSizeBytes = readOptions.maxFileSizeBytes;
+          expect(readOptions).toBeDefined();
+          receivedMaxFileSizeBytes = readOptions?.maxFileSizeBytes;
           return [{ path: "/repo/big.md", content: "large but allowed" }];
         },
       },

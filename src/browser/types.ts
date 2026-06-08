@@ -87,7 +87,7 @@ export interface BrowserAutomationConfig {
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
   manualLoginCookieSync?: boolean;
-  /** Thinking time intensity level for Thinking/Pro models: light, standard, extended, heavy */
+  /** Historical field name for ChatGPT response effort: light, standard, extended, heavy */
   thinkingTime?: ThinkingTimeLevel;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
   researchMode?: BrowserResearchMode;

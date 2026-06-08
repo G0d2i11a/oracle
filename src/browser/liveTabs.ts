@@ -20,6 +20,8 @@ export const DEFAULT_REMOTE_CHROME_PORT = 9222;
 const LOGIN_CTA_PATTERN =
   /\b(log in|login|sign up|sign in|continue with google|continue with microsoft)\b/i;
 
+export type BrowserReasoningUiState = "active" | "complete" | "missing" | "unknown";
+
 interface ChromeTarget {
   id?: string;
   targetId?: string;
@@ -42,6 +44,10 @@ export interface ChatGptTabSummary {
   currentModelLabel: string;
   stopExists: boolean;
   thinkingActive: boolean;
+  reasoningUiState?: BrowserReasoningUiState;
+  reasoningUiText?: string;
+  reasoningUiEvidence?: string[];
+  reasoningDowngradeSuspected?: boolean;
   completionVisible: boolean;
   sendExists: boolean;
   promptReady: boolean;
@@ -166,6 +172,59 @@ export function shouldPreferDeepResearchResultForTest(
   deepResearchText: string | null | undefined,
 ): boolean {
   return shouldPreferDeepResearchResult(currentText, deepResearchText);
+}
+
+function isReasoningBrowserModelLabel(label: string | null | undefined): boolean {
+  const normalized = String(label ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return Boolean(
+    normalized &&
+    (/\bpro\b/.test(normalized) ||
+      normalized.includes("thinking") ||
+      normalized.includes("reasoning") ||
+      normalized.includes("extended") ||
+      normalized.includes("heavy") ||
+      normalized.includes("专业") ||
+      normalized.includes("进阶") ||
+      normalized.includes("思考") ||
+      normalized.includes("推理")),
+  );
+}
+
+export function isReasoningBrowserModelLabelForTest(label: string | null | undefined): boolean {
+  return isReasoningBrowserModelLabel(label);
+}
+
+function normalizeReasoningUiState(value: unknown): BrowserReasoningUiState {
+  return value === "active" || value === "complete" || value === "missing" || value === "unknown"
+    ? value
+    : "unknown";
+}
+
+function shouldSuspectReasoningDowngrade(input: {
+  modelLabel: string;
+  stopExists: boolean;
+  thinkingActive: boolean;
+  completionVisible: boolean;
+  assistantCount: number;
+  reasoningUiState: BrowserReasoningUiState;
+}): boolean {
+  return Boolean(
+    isReasoningBrowserModelLabel(input.modelLabel) &&
+    input.completionVisible &&
+    !input.stopExists &&
+    !input.thinkingActive &&
+    input.assistantCount > 0 &&
+    input.reasoningUiState !== "complete",
+  );
+}
+
+export function shouldSuspectReasoningDowngradeForTest(
+  input: Parameters<typeof shouldSuspectReasoningDowngrade>[0],
+): boolean {
+  return shouldSuspectReasoningDowngrade(input);
 }
 
 function normalizeHostPort(input: HostPort = {}): Required<HostPort> {
@@ -357,6 +416,79 @@ function buildTabInspectionExpression(): string {
           );
         });
       };
+      const readReasoningUi = () => {
+        const durationPattern = /\\b(?:thought|reasoned|reasoning|thinking)\\s+(?:for|about)\\s+(?:a few|several|\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes)(?:\\s+\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds))?)\\b|\\b(?:思考|推理)(?:了|用时|耗时)?\\s*\\d+(?:\\.\\d+)?\\s*(?:秒|分钟|s|min)\\b/i;
+        const completedControlPattern = /\\b(thoughts?|reasoning|reasoned)\\b|思考|推理/i;
+        const activePattern = /\\b(pro thinking|thinking|reasoning|finalizing answer|finalising answer)\\b|正在思考|思考中|推理中/i;
+        const compactLabel = (node) => normalize([
+          node?.textContent,
+          node?.getAttribute?.('aria-label'),
+          node?.getAttribute?.('title'),
+          node?.getAttribute?.('data-testid'),
+        ].filter(Boolean).join(' '));
+        const truncate = (value) => {
+          const text = normalize(value);
+          return text.length > 120 ? text.slice(0, 119).trimEnd() + '…' : text;
+        };
+        const roots = [lastAssistantTurn, document].filter(Boolean);
+        const selector = [
+          '[data-testid*="thinking"]',
+          '[data-testid*="reasoning"]',
+          '[aria-label*="Thought"]',
+          '[aria-label*="thought"]',
+          '[aria-label*="Reason"]',
+          '[aria-label*="reason"]',
+          '[aria-label*="思考"]',
+          '[aria-label*="推理"]',
+          'button',
+          '[role="button"]',
+          'summary',
+          'details',
+        ].join(',');
+        const seen = new Set();
+        for (const root of roots) {
+          const nodes = root === document
+            ? Array.from(document.querySelectorAll(selector))
+            : Array.from(root.querySelectorAll(selector));
+          for (const node of nodes) {
+            if (!(node instanceof Element) || seen.has(node) || !isVisible(node)) continue;
+            seen.add(node);
+            const label = compactLabel(node);
+            if (!label || label.length > 240) continue;
+            const dataTestId = normalizeLower(node.getAttribute?.('data-testid'));
+            if (durationPattern.test(label)) {
+              return {
+                state: 'complete',
+                text: truncate(label),
+                evidence: ['reasoning-duration'],
+              };
+            }
+            if (
+              completionVisible &&
+              (dataTestId.includes('thinking') ||
+                dataTestId.includes('reasoning') ||
+                completedControlPattern.test(label))
+            ) {
+              return {
+                state: 'complete',
+                text: truncate(label),
+                evidence: ['reasoning-control'],
+              };
+            }
+            if (!completionVisible && activePattern.test(label)) {
+              return {
+                state: 'active',
+                text: truncate(label),
+                evidence: ['reasoning-active'],
+              };
+            }
+          }
+        }
+        if (!completionVisible && hasThinkingIndicator()) {
+          return { state: 'active', text: 'thinking indicator', evidence: ['thinking-indicator'] };
+        }
+        return { state: 'unknown', text: '', evidence: [] };
+      };
       const hasCompletionUi = () => {
         if (!lastAssistantTurn) return false;
         const actionButtons = Array.from(document.querySelectorAll(FINISHED_SELECTOR));
@@ -435,16 +567,34 @@ function buildTabInspectionExpression(): string {
       const lastUserText = userTexts[userTexts.length - 1] || '';
       const completionVisible = hasCompletionUi();
       const deepResearchFrameActive = hasLargeDeepResearchFrame() && !completionVisible;
-      const stopExists = mainStopExists || deepResearchFrameActive;
+      const stopExists = mainStopExists;
+      const reasoningUi = readReasoningUi();
+      const hasConversationActivity =
+        turns.length > 0 ||
+        assistantCount > 0 ||
+        Boolean(lastAssistantText) ||
+        Boolean(lastUserText) ||
+        location.pathname.includes('/c/');
       const thinkingActive =
-        stopExists || deepResearchFrameActive || isProgressOnlyText(lastAssistantText) || hasThinkingIndicator();
-      const authenticated = !blocker && !loginButtonExists && (promptReady || sendExists || stopExists || assistantCount > 0);
+        stopExists ||
+        (
+          !completionVisible &&
+          (
+            deepResearchFrameActive ||
+            isProgressOnlyText(lastAssistantText) ||
+            (hasThinkingIndicator() && hasConversationActivity)
+          )
+        );
+      const authenticated = !blocker && !loginButtonExists && (promptReady || sendExists || stopExists || deepResearchFrameActive || assistantCount > 0);
       return {
         title: normalize(document.title),
         url: location.href,
         currentModelLabel,
         stopExists,
         thinkingActive,
+        reasoningUiState: reasoningUi.state,
+        reasoningUiText: reasoningUi.text,
+        reasoningUiEvidence: reasoningUi.evidence,
         completionVisible,
         sendExists,
         promptReady,
@@ -492,18 +642,10 @@ interface DeepResearchFrameTree {
 }
 
 type RawCdpClient = Awaited<ReturnType<typeof CDP>> & {
-  send?: (
-    method: string,
-    params?: Record<string, unknown>,
-    sessionId?: string,
-  ) => Promise<unknown>;
+  send?: (method: string, params?: Record<string, unknown>, sessionId?: string) => Promise<unknown>;
 };
 type RawCdpSendClient = Awaited<ReturnType<typeof CDP>> & {
-  send: (
-    method: string,
-    params?: Record<string, unknown>,
-    sessionId?: string,
-  ) => Promise<unknown>;
+  send: (method: string, params?: Record<string, unknown>, sessionId?: string) => Promise<unknown>;
 };
 
 function isDeepResearchTargetInfo(target: DeepResearchTargetInfo): boolean {
@@ -564,14 +706,8 @@ function mergeDeepResearchSignals(
     active: left.active || right.active,
     completed: left.completed || right.completed,
     textLength: Math.max(left.textLength, right.textLength),
-    text:
-      (right.text?.length ?? 0) > (left.text?.length ?? 0)
-        ? right.text
-        : left.text,
-    html:
-      (right.text?.length ?? 0) > (left.text?.length ?? 0)
-        ? right.html
-        : left.html,
+    text: (right.text?.length ?? 0) > (left.text?.length ?? 0) ? right.text : left.text,
+    html: (right.text?.length ?? 0) > (left.text?.length ?? 0) ? right.html : left.html,
   };
 }
 
@@ -590,9 +726,9 @@ async function inspectDeepResearchLiveSignals(
     return best;
   }
 
-  const targets = (await rawClient.send("Target.getTargets", {}).catch(() => null)) as
-    | { targetInfos?: DeepResearchTargetInfo[] }
-    | null;
+  const targets = (await rawClient.send("Target.getTargets", {}).catch(() => null)) as {
+    targetInfos?: DeepResearchTargetInfo[];
+  } | null;
   for (const target of targets?.targetInfos ?? []) {
     const scopedToCurrentTab =
       target.parentFrameId === parentTargetId || target.openerId === parentTargetId;
@@ -624,9 +760,9 @@ async function inspectCurrentPageDeepResearchFrames(
   rawClient: RawCdpSendClient,
 ): Promise<DeepResearchLiveSignals | null> {
   await rawClient.send("Page.enable", {}).catch(() => undefined);
-  const frameTree = (await rawClient
-    .send("Page.getFrameTree", {})
-    .catch(() => null)) as { frameTree?: DeepResearchFrameTree } | null;
+  const frameTree = (await rawClient.send("Page.getFrameTree", {}).catch(() => null)) as {
+    frameTree?: DeepResearchFrameTree;
+  } | null;
   let best: DeepResearchLiveSignals | null = null;
   for (const frameId of collectDeepResearchFrameIds(frameTree?.frameTree)) {
     const world = (await rawClient
@@ -639,7 +775,11 @@ async function inspectCurrentPageDeepResearchFrames(
     if (typeof world?.executionContextId !== "number") {
       continue;
     }
-    const signal = await evaluateDeepResearchLiveSignals(rawClient, undefined, world.executionContextId);
+    const signal = await evaluateDeepResearchLiveSignals(
+      rawClient,
+      undefined,
+      world.executionContextId,
+    );
     best = mergeDeepResearchSignals(best, signal);
     if (best?.stopExists) {
       return best;
@@ -674,7 +814,11 @@ async function inspectDeepResearchSession(
     if (typeof world?.executionContextId !== "number") {
       continue;
     }
-    const signal = await evaluateDeepResearchLiveSignals(rawClient, sessionId, world.executionContextId);
+    const signal = await evaluateDeepResearchLiveSignals(
+      rawClient,
+      sessionId,
+      world.executionContextId,
+    );
     best = mergeDeepResearchSignals(best, signal);
     if (best?.stopExists) {
       return best;
@@ -853,6 +997,9 @@ export async function inspectChatGptTab(
       currentModelLabel?: string;
       stopExists?: boolean;
       thinkingActive?: boolean;
+      reasoningUiState?: BrowserReasoningUiState;
+      reasoningUiText?: string;
+      reasoningUiEvidence?: unknown;
       completionVisible?: boolean;
       sendExists?: boolean;
       promptReady?: boolean;
@@ -892,29 +1039,66 @@ export async function inspectChatGptTab(
       info.deepResearchStopExists || deepResearchSignals?.stopExists,
     );
     const deepResearchActive = Boolean(info.deepResearchActive || deepResearchSignals?.active);
-    const stopExists = Boolean(info.stopExists || deepResearchStopExists || deepResearchActive);
-    const thinkingActive = Boolean(info.thinkingActive || stopExists || deepResearchActive);
+    const stopExists = Boolean(info.stopExists || deepResearchStopExists);
     const effectiveLastAssistantText = shouldPreferDeepResearchResult(
       lastAssistantText,
       deepResearchResultText,
     )
       ? (deepResearchResultText as string)
       : lastAssistantText;
+    const assistantCount = Number.isFinite(info.assistantCount) ? Number(info.assistantCount) : 0;
+    const hasConversationActivity = Boolean(
+      assistantCount > 0 ||
+      firstAssistantText ||
+      effectiveLastAssistantText ||
+      lastUserText ||
+      extractConversationIdFromUrl(info.url ?? target.url ?? ""),
+    );
+    const completionVisible = Boolean(info.completionVisible);
+    const thinkingActive = Boolean(
+      stopExists ||
+      (!completionVisible &&
+        (deepResearchActive || (info.thinkingActive && hasConversationActivity))),
+    );
+    const currentModelLabel = normalizeTitle(info.currentModelLabel ?? "");
+    const rawReasoningUiState = normalizeReasoningUiState(info.reasoningUiState);
+    const reasoningUiText = trimToSnippet(String(info.reasoningUiText ?? ""), 120);
+    const reasoningUiEvidence = Array.isArray(info.reasoningUiEvidence)
+      ? info.reasoningUiEvidence
+          .map((entry) => String(entry ?? "").trim())
+          .filter(Boolean)
+          .slice(0, 8)
+      : [];
+    const reasoningDowngradeSuspected = shouldSuspectReasoningDowngrade({
+      modelLabel: currentModelLabel,
+      stopExists,
+      thinkingActive,
+      completionVisible,
+      assistantCount,
+      reasoningUiState: rawReasoningUiState,
+    });
+    const reasoningUiState: BrowserReasoningUiState = reasoningDowngradeSuspected
+      ? "missing"
+      : rawReasoningUiState;
     const summary: ChatGptTabSummary = {
       host,
       port,
       targetId,
       title: normalizeTitle(info.title ?? target.title ?? ""),
       url: normalizeUrl(info.url ?? target.url ?? ""),
-      currentModelLabel: normalizeTitle(info.currentModelLabel ?? ""),
+      currentModelLabel,
       stopExists,
       thinkingActive,
-      completionVisible: Boolean(info.completionVisible),
+      reasoningUiState,
+      reasoningUiText,
+      reasoningUiEvidence,
+      reasoningDowngradeSuspected,
+      completionVisible,
       sendExists: Boolean(info.sendExists),
       promptReady: Boolean(info.promptReady),
       loginButtonExists: Boolean(info.loginButtonExists),
       authenticated: Boolean(!blocker && info.authenticated),
-      assistantCount: Number.isFinite(info.assistantCount) ? Number(info.assistantCount) : 0,
+      assistantCount,
       firstAssistantText,
       firstAssistantSnippet: trimToSnippet(firstAssistantText),
       openingLine,
@@ -955,7 +1139,7 @@ export function classifyTabState(
     | "sendExists"
     | "promptReady"
     | "assistantCount"
->,
+  >,
 ): BrowserHarvestState {
   if (summary?.blocker) {
     return "blocked";
@@ -963,7 +1147,9 @@ export function classifyTabState(
   if (!summary?.authenticated) {
     return "detached";
   }
-  if (summary.stopExists || summary.thinkingActive) {
+  const hasInFlightThinking =
+    summary.thinkingActive && !summary.completionVisible && summary.assistantCount > 0;
+  if (summary.stopExists || hasInFlightThinking) {
     return "running";
   }
   if (summary.sendExists || summary.promptReady || summary.assistantCount > 0) {
@@ -1123,7 +1309,10 @@ export async function harvestChatGptTab(
     const lastAssistantText = shouldPreferDeepResearchResult(latestText, deepResearchResultText)
       ? deepResearchResultText
       : (latestText ?? "");
-    const assistantOutput = shouldPreferDeepResearchResult(assistantMarkdown, deepResearchResultText)
+    const assistantOutput = shouldPreferDeepResearchResult(
+      assistantMarkdown,
+      deepResearchResultText,
+    )
       ? deepResearchResultText
       : assistantMarkdown;
     const harvested: ChatGptTabSummary = {
@@ -1165,6 +1354,10 @@ export async function harvestChatGptTab(
       harvested.sendExists = followup.sendExists;
       harvested.promptReady = followup.promptReady;
       harvested.currentModelLabel = followup.currentModelLabel;
+      harvested.reasoningUiState = followup.reasoningUiState;
+      harvested.reasoningUiText = followup.reasoningUiText;
+      harvested.reasoningUiEvidence = followup.reasoningUiEvidence;
+      harvested.reasoningDowngradeSuspected = followup.reasoningDowngradeSuspected;
       harvested.focused = followup.focused;
       harvested.visibilityState = followup.visibilityState;
       harvested.assistantCount = followup.assistantCount;
@@ -1229,14 +1422,36 @@ export function sessionMatchesTab(meta: SessionMetadata, tab: Partial<ChatGptTab
   if (!hostMatches) {
     return false;
   }
-  const matches = [
-    runtime.chromeTargetId && runtime.chromeTargetId === tab.targetId,
-    harvest.targetId && harvest.targetId === tab.targetId,
-    runtime.tabUrl && runtime.tabUrl === tab.url,
-    harvest.url && harvest.url === tab.url,
-    conversationId && runtime.conversationId && runtime.conversationId === conversationId,
-    conversationId && harvest.conversationId && harvest.conversationId === conversationId,
-  ].some(Boolean);
+  const targetIdMatches = Boolean(
+    (runtime.chromeTargetId && runtime.chromeTargetId === tab.targetId) ||
+    (harvest.targetId && harvest.targetId === tab.targetId),
+  );
+  const storedConversationId =
+    runtime.conversationId ||
+    harvest.conversationId ||
+    extractConversationIdFromUrl(runtime.tabUrl ?? "") ||
+    extractConversationIdFromUrl(harvest.url ?? "");
+  const exactUrlMatches = Boolean(
+    (runtime.tabUrl && runtime.tabUrl === tab.url) || (harvest.url && harvest.url === tab.url),
+  );
+  const tabIsConversation = Boolean(conversationId || isChatGptConversationUrl(tab.url ?? ""));
+  const urlMatches = Boolean(exactUrlMatches && tabIsConversation);
+  const conversationMatches = Boolean(
+    (conversationId && runtime.conversationId && runtime.conversationId === conversationId) ||
+    (conversationId && harvest.conversationId && harvest.conversationId === conversationId),
+  );
+  const harvestStillActive = Boolean(
+    harvest.state === "running" || harvest.stopExists || harvest.thinkingActive,
+  );
+  const canUseTargetIdForPreConversationTab = Boolean(
+    targetIdMatches &&
+    (meta.status === "running" || harvestStillActive) &&
+    !storedConversationId &&
+    !tabIsConversation,
+  );
+  const targetIdCanStillIdentifySession =
+    targetIdMatches && (urlMatches || conversationMatches || canUseTargetIdForPreConversationTab);
+  const matches = targetIdCanStillIdentifySession || urlMatches || conversationMatches;
   return Boolean(
     matches ||
     (portMatches &&

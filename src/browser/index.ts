@@ -654,7 +654,7 @@ function validateBrowserAnswerFinalization(
     reasons.push("stop-visible");
   }
   if (input.thinkingActive) {
-    reasons.push("thinking-active");
+    reasons.push("response-progress-active");
   }
   if (input.completionUiVisible && !input.completionUiScopedToMessage) {
     reasons.push("completion-ui-not-scoped-to-candidate");
@@ -1692,11 +1692,11 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
       logger("Model picker: skipped (strategy=ignore)");
     }
     const deepResearch = config.researchMode === "deep";
-    // Handle thinking time selection if specified. Deep Research owns its own effort flow.
+    // Handle response-effort selection if specified. Deep Research owns its own effort flow.
     const thinkingTime = config.thinkingTime;
     if (thinkingTime && !deepResearch) {
       if (shouldSkipThinkingTimeSelection(config.desiredModel, thinkingTime)) {
-        logger("Thinking time: Pro Extended (via model selection)");
+        logger("Pro Extended: selected via model picker");
       } else {
         await raceWithDisconnect(
           withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger), {
@@ -1705,7 +1705,7 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
             onRetry: (attempt, error) => {
               if (options.verbose) {
                 logger(
-                  `[retry] Thinking time (${thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                  `[retry] Response effort (${thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
                 );
               }
             },
@@ -1768,7 +1768,7 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
           const attachment = submissionAttachments[attachmentIndex];
           logger(`Uploading attachment: ${attachment.displayPath}`);
           const uiConfirmed = await uploadAttachmentFile(
-            { runtime: Runtime, dom: DOM, input: Input },
+            { runtime: Runtime, page: Page, dom: DOM, input: Input },
             attachment,
             logger,
             { expectedCount: attachmentIndex + 1 },
@@ -3258,11 +3258,11 @@ async function runRemoteBrowserMode(
       logger("Model picker: skipped (strategy=ignore)");
     }
     const deepResearch = config.researchMode === "deep";
-    // Handle thinking time selection if specified. Deep Research owns its own effort flow.
+    // Handle response-effort selection if specified. Deep Research owns its own effort flow.
     const thinkingTime = config.thinkingTime;
     if (thinkingTime && !deepResearch) {
       if (shouldSkipThinkingTimeSelection(config.desiredModel, thinkingTime)) {
-        logger("Thinking time: Pro Extended (via model selection)");
+        logger("Pro Extended: selected via model picker");
       } else {
         await withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger), {
           retries: 2,
@@ -3270,7 +3270,7 @@ async function runRemoteBrowserMode(
           onRetry: (attempt, error) => {
             if (options.verbose) {
               logger(
-                `[retry] Thinking time (${thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                `[retry] Response effort (${thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
               );
             }
           },

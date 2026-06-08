@@ -11,6 +11,15 @@ import { cleanupStaleProfileState } from "./profileState.js";
 import { delay } from "./utils.js";
 
 const execFileAsync = promisify(execFile);
+const MACOS_WINDOW_HIDE_ALLOWED_VALUES = new Set(["1", "true", "yes", "on"]);
+
+export function isMacOsWindowHideAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return MACOS_WINDOW_HIDE_ALLOWED_VALUES.has(
+    String(env.ORACLE_BROWSER_ALLOW_MACOS_WINDOW_HIDE ?? "")
+      .trim()
+      .toLowerCase(),
+  );
+}
 
 export async function launchChrome(
   config: ResolvedBrowserConfig,
@@ -128,6 +137,12 @@ export async function hideChromeWindow(
 ): Promise<void> {
   if (process.platform !== "darwin") {
     logger("Window hiding is only supported on macOS");
+    return;
+  }
+  if (!isMacOsWindowHideAllowed()) {
+    logger(
+      "Skipping macOS Chrome window hiding; set ORACLE_BROWSER_ALLOW_MACOS_WINDOW_HIDE=1 to allow System Events automation.",
+    );
     return;
   }
   if (!chrome.pid) {

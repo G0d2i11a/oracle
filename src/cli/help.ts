@@ -82,7 +82,7 @@ function renderHelpFooter(program: Command, colors: HelpColors): string {
     `${colors.bullet("•")} Set a memorable 3–5 word slug via ${colors.accent('--slug "<words>"')} to keep session IDs tidy.`,
     `${colors.bullet("•")} Finished sessions auto-hide preamble logs when reattached; raw timestamps remain in the saved log file.`,
     `${colors.bullet("•")} Need hidden flags? Run ${colors.accent(`${program.name()} --help --verbose`)} to list search/token/browser overrides.`,
-    `${colors.bullet("•")} If any Oracle session is already running, do not start new API runs. Attach to the existing browser session instead; only trigger API calls when you explicitly mean to.`,
+    `${colors.bullet("•")} If the same task/prompt is already running, attach to that session instead of starting a duplicate; unrelated live browser sessions do not block a new Oracle run.`,
     `${colors.bullet("•")} Duplicate prompt guard: if the same prompt is already running, new runs are blocked unless you pass ${colors.accent("--force")}—prefer reattaching instead of spawning duplicates.`,
   ].join("\n");
 

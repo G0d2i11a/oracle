@@ -39,9 +39,11 @@ import {
   classifyTabState,
   formatBrowserTabState,
   inspectChatGptTab,
+  isReasoningBrowserModelLabelForTest,
   resolveChatGptTabFromSummariesForTest,
   resolveAssistantSnippetTextForTest,
   sessionMatchesTab,
+  shouldSuspectReasoningDowngradeForTest,
   shouldPreferDeepResearchResultForTest,
   type ChatGptTabSummary,
 } from "../../src/browser/liveTabs.js";
@@ -108,6 +110,30 @@ describe("liveTabs helpers", () => {
         blocker: undefined,
         authenticated: true,
         stopExists: false,
+        thinkingActive: true,
+        completionVisible: true,
+        sendExists: true,
+        promptReady: true,
+        assistantCount: 2,
+      }),
+    ).toBe("completed");
+    expect(
+      classifyTabState({
+        blocker: undefined,
+        authenticated: true,
+        stopExists: false,
+        thinkingActive: true,
+        completionVisible: false,
+        sendExists: false,
+        promptReady: true,
+        assistantCount: 0,
+      }),
+    ).toBe("completed");
+    expect(
+      classifyTabState({
+        blocker: undefined,
+        authenticated: true,
+        stopExists: false,
         thinkingActive: false,
         completionVisible: true,
         sendExists: true,
@@ -150,13 +176,23 @@ describe("liveTabs helpers", () => {
     expect(expression).toContain("completionVisible");
   });
 
+  test("status inspection captures completed ChatGPT reasoning UI markers", () => {
+    const expression = buildTabInspectionExpressionForTest();
+    expect(expression).toContain("readReasoningUi");
+    expect(expression).toContain("reasoning-duration");
+    expect(expression).toContain("Thought");
+    expect(expression).toContain("reasoningUiState");
+    expect(expression).toContain("reasoningUiEvidence");
+  });
+
   test("treats an active Deep Research iframe as running even after a preamble", () => {
     const expression = buildTabInspectionExpressionForTest();
     expect(expression).toContain("hasLargeDeepResearchFrame");
     expect(expression).toContain("internal://deep-research");
     expect(expression).toContain("deepResearchFrameActive");
     expect(expression).toContain("hasLargeDeepResearchFrame() && !completionVisible");
-    expect(expression).toContain("const stopExists = mainStopExists || deepResearchFrameActive");
+    expect(expression).toContain("const stopExists = mainStopExists");
+    expect(expression).toContain("deepResearchActive: deepResearchFrameActive");
   });
 
   test("surfaces expired ChatGPT sessions as blockers", () => {
@@ -326,8 +362,263 @@ describe("liveTabs helpers", () => {
     expect(summary.state).toBe("detached");
   });
 
+  test("does not treat thinking-only empty ChatGPT home as a running conversation", async () => {
+    cdpMocks.runtime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            title: "ChatGPT",
+            url: "https://chatgpt.com/",
+            currentModelLabel: "Instant",
+            stopExists: false,
+            thinkingActive: true,
+            completionVisible: false,
+            sendExists: false,
+            promptReady: true,
+            loginButtonExists: false,
+            authenticated: true,
+            assistantCount: 0,
+            firstAssistantText: "",
+            openingLine: "",
+            lastAssistantText: "",
+            lastUserText: "",
+            visibilityState: "visible",
+            focused: false,
+          },
+        },
+      })
+      .mockResolvedValueOnce({ result: { value: null } });
+
+    const summary = await inspectChatGptTab({
+      target: {
+        targetId: "target-home",
+        type: "page",
+        title: "ChatGPT",
+        url: "https://chatgpt.com/",
+      },
+    });
+
+    expect(summary.thinkingActive).toBe(false);
+    expect(summary.assistantCount).toBe(0);
+    expect(summary.state).toBe("completed");
+  });
+
+  test("does not treat completed UI plus stale thinking as a running conversation", async () => {
+    cdpMocks.runtime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            title: "ChatGPT",
+            url: "https://chatgpt.com/c/completed",
+            currentModelLabel: "Pro",
+            stopExists: false,
+            thinkingActive: true,
+            completionVisible: true,
+            sendExists: true,
+            promptReady: true,
+            loginButtonExists: false,
+            authenticated: true,
+            assistantCount: 2,
+            firstAssistantText: "Opening assistant line.",
+            openingLine: "Opening assistant line.",
+            lastAssistantText: "Final answer body.",
+            lastUserText: "Question",
+            visibilityState: "visible",
+            focused: false,
+          },
+        },
+      })
+      .mockResolvedValueOnce({ result: { value: null } });
+
+    const summary = await inspectChatGptTab({
+      target: {
+        targetId: "target-completed",
+        type: "page",
+        title: "ChatGPT",
+        url: "https://chatgpt.com/c/completed",
+      },
+    });
+
+    expect(summary.stopExists).toBe(false);
+    expect(summary.thinkingActive).toBe(false);
+    expect(summary.completionVisible).toBe(true);
+    expect(summary.state).toBe("completed");
+  });
+
+  test("marks completed Pro runs without reasoning UI as downgrade suspects", async () => {
+    cdpMocks.runtime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            title: "ChatGPT",
+            url: "https://chatgpt.com/c/pro-missing-reasoning",
+            currentModelLabel: "Pro",
+            stopExists: false,
+            thinkingActive: false,
+            reasoningUiState: "unknown",
+            reasoningUiText: "",
+            reasoningUiEvidence: [],
+            completionVisible: true,
+            sendExists: true,
+            promptReady: true,
+            loginButtonExists: false,
+            authenticated: true,
+            assistantCount: 1,
+            firstAssistantText: "Answer body.",
+            openingLine: "Answer body.",
+            lastAssistantText: "Answer body.",
+            lastUserText: "Question",
+            visibilityState: "visible",
+            focused: false,
+          },
+        },
+      })
+      .mockResolvedValueOnce({ result: { value: null } });
+
+    const summary = await inspectChatGptTab({
+      target: {
+        targetId: "target-pro-missing",
+        type: "page",
+        title: "ChatGPT",
+        url: "https://chatgpt.com/c/pro-missing-reasoning",
+      },
+    });
+
+    expect(summary.reasoningUiState).toBe("missing");
+    expect(summary.reasoningDowngradeSuspected).toBe(true);
+    expect(summary.state).toBe("completed");
+  });
+
+  test("does not flag completed Pro runs with Thought duration UI", async () => {
+    cdpMocks.runtime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            title: "ChatGPT",
+            url: "https://chatgpt.com/c/pro-reasoned",
+            currentModelLabel: "Pro",
+            stopExists: false,
+            thinkingActive: false,
+            reasoningUiState: "complete",
+            reasoningUiText: "Thought for 8s",
+            reasoningUiEvidence: ["reasoning-duration"],
+            completionVisible: true,
+            sendExists: true,
+            promptReady: true,
+            loginButtonExists: false,
+            authenticated: true,
+            assistantCount: 1,
+            firstAssistantText: "Answer body.",
+            openingLine: "Answer body.",
+            lastAssistantText: "Answer body.",
+            lastUserText: "Question",
+            visibilityState: "visible",
+            focused: false,
+          },
+        },
+      })
+      .mockResolvedValueOnce({ result: { value: null } });
+
+    const summary = await inspectChatGptTab({
+      target: {
+        targetId: "target-pro-reasoned",
+        type: "page",
+        title: "ChatGPT",
+        url: "https://chatgpt.com/c/pro-reasoned",
+      },
+    });
+
+    expect(summary.reasoningUiState).toBe("complete");
+    expect(summary.reasoningUiText).toBe("Thought for 8s");
+    expect(summary.reasoningUiEvidence).toEqual(["reasoning-duration"]);
+    expect(summary.reasoningDowngradeSuspected).toBe(false);
+  });
+
+  test("does not expose Deep Research iframe activity as a Stop button", async () => {
+    cdpMocks.runtime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            title: "ChatGPT",
+            url: "https://chatgpt.com/c/deep",
+            currentModelLabel: "Pro",
+            stopExists: false,
+            thinkingActive: true,
+            deepResearchActive: true,
+            completionVisible: false,
+            sendExists: false,
+            promptReady: true,
+            loginButtonExists: false,
+            authenticated: true,
+            assistantCount: 1,
+            firstAssistantText: "Reading documents",
+            openingLine: "Reading documents",
+            lastAssistantText: "Reading documents",
+            lastUserText: "Investigate the attached files.",
+            visibilityState: "visible",
+            focused: false,
+          },
+        },
+      })
+      .mockResolvedValueOnce({ result: { value: null } });
+
+    const summary = await inspectChatGptTab({
+      target: {
+        targetId: "target-deep",
+        type: "page",
+        title: "ChatGPT",
+        url: "https://chatgpt.com/c/deep",
+      },
+    });
+
+    expect(summary.stopExists).toBe(false);
+    expect(summary.thinkingActive).toBe(true);
+    expect(summary.deepResearchActive).toBe(true);
+    expect(summary.state).toBe("running");
+  });
+
   test("formats the stored state when present", () => {
     expect(formatBrowserTabState(makeTab({ state: "stalled" }))).toBe("stalled");
+  });
+
+  test("recognizes Pro and Thinking labels as reasoning browser models", () => {
+    expect(isReasoningBrowserModelLabelForTest("Pro")).toBe(true);
+    expect(isReasoningBrowserModelLabelForTest("ChatGPT + Pro")).toBe(true);
+    expect(isReasoningBrowserModelLabelForTest("GPT-5.2 Thinking")).toBe(true);
+    expect(isReasoningBrowserModelLabelForTest("Instant")).toBe(false);
+  });
+
+  test("suspects downgrade only after a completed reasoning-model answer without reasoning UI", () => {
+    expect(
+      shouldSuspectReasoningDowngradeForTest({
+        modelLabel: "Pro",
+        stopExists: false,
+        thinkingActive: false,
+        completionVisible: true,
+        assistantCount: 1,
+        reasoningUiState: "unknown",
+      }),
+    ).toBe(true);
+    expect(
+      shouldSuspectReasoningDowngradeForTest({
+        modelLabel: "Pro",
+        stopExists: true,
+        thinkingActive: true,
+        completionVisible: false,
+        assistantCount: 1,
+        reasoningUiState: "active",
+      }),
+    ).toBe(false);
+    expect(
+      shouldSuspectReasoningDowngradeForTest({
+        modelLabel: "Pro",
+        stopExists: false,
+        thinkingActive: false,
+        completionVisible: true,
+        assistantCount: 1,
+        reasoningUiState: "complete",
+      }),
+    ).toBe(false);
   });
 
   test("prefers complete markdown over tiny snapshot snippets", () => {
@@ -424,6 +715,153 @@ describe("liveTabs helpers", () => {
         url: "https://chatgpt.com/c/def",
         conversationId: "def",
       }),
+    ).toBe(false);
+    expect(
+      sessionMatchesTab(
+        {
+          ...meta,
+          status: "completed",
+          browser: {
+            ...meta.browser,
+            runtime: {
+              ...meta.browser?.runtime,
+              tabUrl: "https://chatgpt.com/",
+              conversationId: undefined,
+            },
+          },
+        },
+        {
+          host: "127.0.0.1",
+          port: 9222,
+          targetId: "target-1",
+          url: "https://chatgpt.com/c/new-owner",
+          conversationId: "new-owner",
+        },
+      ),
+    ).toBe(false);
+    expect(
+      sessionMatchesTab(
+        {
+          ...meta,
+          status: "running",
+        },
+        {
+          host: "127.0.0.1",
+          port: 9222,
+          targetId: "target-1",
+          url: "https://chatgpt.com/",
+          conversationId: undefined,
+        },
+      ),
+    ).toBe(false);
+    expect(
+      sessionMatchesTab(
+        {
+          ...meta,
+          status: "completed",
+          browser: {
+            ...meta.browser,
+            harvest: {
+              targetId: "target-1",
+              url: "https://chatgpt.com/",
+            },
+            runtime: {
+              chromeHost: "127.0.0.1",
+              chromePort: 9222,
+              chromeTargetId: "target-1",
+              tabUrl: "https://chatgpt.com/",
+              conversationId: undefined,
+            },
+          },
+        },
+        {
+          host: "127.0.0.1",
+          port: 9222,
+          targetId: "target-1",
+          url: "https://chatgpt.com/",
+          conversationId: undefined,
+        },
+      ),
+    ).toBe(false);
+    expect(
+      sessionMatchesTab(
+        {
+          ...meta,
+          status: "completed",
+          browser: {
+            ...meta.browser,
+            harvest: {
+              targetId: "target-1",
+              url: "https://chatgpt.com/",
+              state: "running",
+              stopExists: true,
+              thinkingActive: true,
+            },
+            runtime: {
+              chromeHost: "127.0.0.1",
+              chromePort: 9222,
+              chromeTargetId: "target-1",
+              tabUrl: "https://chatgpt.com/",
+              conversationId: undefined,
+            },
+          },
+        },
+        {
+          host: "127.0.0.1",
+          port: 9222,
+          targetId: "target-1",
+          url: "https://chatgpt.com/",
+          conversationId: undefined,
+        },
+      ),
+    ).toBe(true);
+    expect(
+      sessionMatchesTab(
+        {
+          ...meta,
+          status: "running",
+          browser: {
+            runtime: {
+              chromeHost: "127.0.0.1",
+              chromePort: 9222,
+              chromeTargetId: "target-1",
+              tabUrl: "https://chatgpt.com/",
+              conversationId: undefined,
+            },
+          },
+        } as SessionMetadata,
+        {
+          host: "127.0.0.1",
+          port: 9222,
+          targetId: "target-1",
+          url: "https://chatgpt.com/",
+          conversationId: undefined,
+        },
+      ),
+    ).toBe(true);
+    expect(
+      sessionMatchesTab(
+        {
+          ...meta,
+          status: "error",
+          browser: {
+            ...meta.browser,
+            runtime: {
+              ...meta.browser?.runtime,
+              chromeTargetId: "target-1",
+              tabUrl: "https://chatgpt.com/",
+              conversationId: undefined,
+            },
+          },
+        },
+        {
+          host: "127.0.0.1",
+          port: 9222,
+          targetId: "target-2",
+          url: "https://chatgpt.com/",
+          conversationId: undefined,
+        },
+      ),
     ).toBe(false);
   });
 });

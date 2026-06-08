@@ -10,10 +10,10 @@ import {
 } from "../../src/mcp/tools/consult.ts";
 
 describe("summarizeModelRunsForConsult", () => {
-  test("applies the ChatGPT Pro Heavy consult preset as overridable defaults", () => {
+  test("applies the ChatGPT Pro Extended consult preset as overridable defaults", () => {
     expect(
       applyConsultPreset({
-        preset: "chatgpt-pro-heavy",
+        preset: "chatgpt-pro-extended",
         prompt: "review this plan",
         files: [],
       }),
@@ -25,7 +25,7 @@ describe("summarizeModelRunsForConsult", () => {
 
     expect(
       applyConsultPreset({
-        preset: "chatgpt-pro-heavy",
+        preset: "chatgpt-pro-extended",
         prompt: "use current picker",
         files: [],
         model: "gpt-5.2",
@@ -38,10 +38,24 @@ describe("summarizeModelRunsForConsult", () => {
     });
   });
 
-  test("rejects the ChatGPT Pro Heavy preset with multi-model fan-out", () => {
-    expect(() =>
+  test("keeps the legacy ChatGPT Pro Heavy preset as an Extended Pro alias", () => {
+    expect(
       applyConsultPreset({
         preset: "chatgpt-pro-heavy",
+        prompt: "legacy preset",
+        files: [],
+      }),
+    ).toMatchObject({
+      engine: "browser",
+      model: "gpt-5.5-pro",
+      browserThinkingTime: "extended",
+    });
+  });
+
+  test("rejects the ChatGPT Pro Extended preset with multi-model fan-out", () => {
+    expect(() =>
+      applyConsultPreset({
+        preset: "chatgpt-pro-extended",
         prompt: "review this plan",
         files: [],
         models: ["gpt-5.1", "gpt-5.2"],
@@ -186,7 +200,7 @@ describe("summarizeModelRunsForConsult", () => {
     });
     expect(resolved.guidance.join("\n")).toContain("signed-in ChatGPT profile");
     expect(formatConsultDryRunResolved(resolved).join("\n")).toContain(
-      "browser thinking time: extended",
+      "browser response effort: extended",
     );
   });
 

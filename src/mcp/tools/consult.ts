@@ -37,7 +37,7 @@ const consultInputShape = {
     .enum(CONSULT_PRESETS)
     .optional()
     .describe(
-      'Optional MCP convenience preset. "chatgpt-pro-heavy" selects ChatGPT browser mode, the current Pro model alias, and Pro Extended thinking unless overridden.',
+      'Optional MCP convenience preset. "chatgpt-pro-extended" selects ChatGPT browser mode, the current Pro model alias, and Pro Extended. "chatgpt-pro-heavy" remains a legacy alias.',
     ),
   prompt: z.string().min(1, "Prompt is required.").describe("User prompt to run."),
   files: z
@@ -81,7 +81,7 @@ const consultInputShape = {
   browserThinkingTime: z
     .enum(["light", "standard", "extended", "heavy"])
     .optional()
-    .describe("Browser-only: set ChatGPT thinking time when supported by the chosen model."),
+    .describe("Browser-only: set ChatGPT response effort; use extended for Pro Extended."),
   browserModelStrategy: z
     .enum(["select", "current", "ignore"])
     .optional()
@@ -300,7 +300,7 @@ export function buildConsultDryRunResolved({
   const followUpCount = runOptions.browserFollowUps?.filter((entry) => entry.trim()).length ?? 0;
   if (resolvedEngine === "api") {
     guidance.push(
-      'API engine requires provider credentials. If the operator has ChatGPT Pro but no API key, retry with engine:"browser" or preset:"chatgpt-pro-heavy".',
+      'API engine requires provider credentials. If the operator has ChatGPT Pro but no API key, retry with engine:"browser" or preset:"chatgpt-pro-extended".',
     );
   }
   if (resolvedEngine === "browser") {
@@ -363,7 +363,7 @@ export function formatConsultDryRunResolved(details: ConsultDryRunResolved): str
   lines.push(`  files: ${details.files.length}`);
   if (details.browser) {
     lines.push(`  browser desired model: ${details.browser.desiredModel ?? "(default)"}`);
-    lines.push(`  browser thinking time: ${details.browser.thinkingTime ?? "(default)"}`);
+    lines.push(`  browser response effort: ${details.browser.thinkingTime ?? "(default)"}`);
     lines.push(`  browser model strategy: ${details.browser.modelStrategy ?? "(default)"}`);
     lines.push(`  browser research mode: ${details.browser.researchMode ?? "off"}`);
     lines.push(`  browser attachments: ${details.browser.attachments ?? "auto"}`);

@@ -217,7 +217,7 @@ function assertResolvedModelSelection(desiredModel: string, resolvedLabel: strin
     resolved.includes("pro") || resolved.includes("专业") || resolved.includes("进阶");
   if (!hasProSignal || hasInstantSignal || (hasThinkingSignal && !resolvedHasProSignal)) {
     throw new Error(
-      `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires GPT-5.5 Pro Extended. Use model "gpt-5.5" with browser thinking time "heavy" for Thinking Heavy.`,
+      `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires GPT-5.5 Pro Extended. Use model "gpt-5.5" with browser response effort "heavy" only when Thinking Heavy is explicitly requested.`,
     );
   }
 }

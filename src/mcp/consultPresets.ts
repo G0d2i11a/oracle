@@ -1,21 +1,21 @@
 import type { ConsultInput } from "./types.js";
 
-const CHATGPT_PRO_HEAVY_MODEL = "gpt-5.5-pro";
-const CHATGPT_PRO_HEAVY_THINKING_TIME = "extended";
+const CHATGPT_PRO_EXTENDED_MODEL = "gpt-5.5-pro";
+const CHATGPT_PRO_EXTENDED_THINKING_TIME = "extended";
 
 export function applyConsultPreset(input: ConsultInput): ConsultInput {
   if (!input.preset) {
     return input;
   }
-  if (input.preset === "chatgpt-pro-heavy") {
+  if (input.preset === "chatgpt-pro-extended" || input.preset === "chatgpt-pro-heavy") {
     if (input.models && input.models.length > 0) {
-      throw new Error('MCP consult preset "chatgpt-pro-heavy" cannot be combined with models.');
+      throw new Error(`MCP consult preset "${input.preset}" cannot be combined with models.`);
     }
     return {
       ...input,
       engine: input.engine ?? "browser",
-      model: input.model ?? CHATGPT_PRO_HEAVY_MODEL,
-      browserThinkingTime: input.browserThinkingTime ?? CHATGPT_PRO_HEAVY_THINKING_TIME,
+      model: input.model ?? CHATGPT_PRO_EXTENDED_MODEL,
+      browserThinkingTime: input.browserThinkingTime ?? CHATGPT_PRO_EXTENDED_THINKING_TIME,
     };
   }
   return input;

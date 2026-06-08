@@ -54,7 +54,8 @@ describe("assembleBrowserPrompt", () => {
     await assembleBrowserPrompt(options, {
       cwd: "/repo",
       readFilesImpl: async (_paths, readOptions) => {
-        receivedMaxFileSizeBytes = readOptions.maxFileSizeBytes;
+        expect(readOptions).toBeDefined();
+        receivedMaxFileSizeBytes = readOptions?.maxFileSizeBytes;
         return [{ path: "/repo/a.txt", content: "hello" }];
       },
     });
@@ -312,5 +313,32 @@ describe("assembleBrowserPrompt", () => {
       originalCount: 11,
       bundlePath: result.attachments[0]?.displayPath,
     });
+  });
+
+  test("allows overriding browser attachment bundling threshold", async () => {
+    const previous = process.env.ORACLE_BROWSER_MAX_ATTACHMENTS;
+    process.env.ORACLE_BROWSER_MAX_ATTACHMENTS = "20";
+    try {
+      const fileNames = Array.from({ length: 16 }, (_, i) => `file${i + 1}.txt`);
+      const options = buildOptions({ file: fileNames, browserAttachments: "always" });
+      const result = await assembleBrowserPrompt(options, {
+        cwd: "/repo",
+        readFilesImpl: async (paths) =>
+          paths.map((entry) => ({
+            path: path.resolve("/repo", entry),
+            content: `content for ${entry}`,
+          })),
+      });
+
+      expect(result.attachments).toHaveLength(16);
+      expect(result.attachmentMode).toBe("upload");
+      expect(result.bundled).toBeNull();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ORACLE_BROWSER_MAX_ATTACHMENTS;
+      } else {
+        process.env.ORACLE_BROWSER_MAX_ATTACHMENTS = previous;
+      }
+    }
   });
 });

@@ -2,6 +2,7 @@ import type { BrowserLogger, ChromeClient } from "../types.js";
 import { formatElapsed } from "../../oracle/format.js";
 import { ASSISTANT_ROLE_SELECTOR, CONVERSATION_TURN_SELECTOR } from "../constants.js";
 import { buildVisibleStopButtonFunction } from "./stopButton.js";
+import { formatVisibleChatGptErrorLog, readVisibleChatGptError } from "./chatgptErrors.js";
 
 export interface ThinkingStatusSnapshot {
   message: string;
@@ -38,6 +39,18 @@ export function startThinkingStatusMonitor(
     }
     pending = true;
     try {
+      const visibleError = await readVisibleChatGptError(Runtime);
+      if (stopped) {
+        return;
+      }
+      if (visibleError) {
+        const fingerprint = `error:${visibleError.source}:${visibleError.message}`;
+        if (fingerprint !== lastFingerprint) {
+          lastFingerprint = fingerprint;
+          logger(formatVisibleChatGptErrorLog(visibleError));
+        }
+        return;
+      }
       const snapshot = await readThinkingStatus(Runtime);
       if (stopped) {
         return;
@@ -91,8 +104,8 @@ export function formatThinkingLog(
       ? `${Math.max(0, Math.min(100, Math.round(snapshot.progressPercent)))}% UI progress`
       : null;
   const prefix = progress
-    ? `[browser] ChatGPT thinking - ${progress}, ${elapsedText} elapsed`
-    : `[browser] ChatGPT thinking - ${elapsedText} elapsed`;
+    ? `[browser] ChatGPT response progress - ${progress}, ${elapsedText} elapsed`
+    : `[browser] ChatGPT response progress - ${elapsedText} elapsed`;
   const statusLabel = snapshot.message ? `; status=${snapshot.message}` : "";
   const changeLabel = unchangedMs > 0 ? `; last change ${formatElapsed(unchangedMs)} ago` : "";
   const sourceLabel = snapshot.source ? `; source=${snapshot.source}` : "";
@@ -100,7 +113,7 @@ export function formatThinkingLog(
 }
 
 export function formatThinkingWaitingLog(startedAt: number, now: number): string {
-  return `[browser] Waiting for ChatGPT response - ${formatElapsed(now - startedAt)} elapsed; no thinking status detected yet.`;
+  return `[browser] Waiting for ChatGPT response - ${formatElapsed(now - startedAt)} elapsed; no Pro Extended progress indicator detected yet.`;
 }
 
 function resolveThinkingStatusInterval(intervalMs?: number): number | null {
@@ -160,8 +173,8 @@ export async function readThinkingStatus(
 const SAFE_THINKING_STATUS_MESSAGES = new Set([
   "active",
   "finalizing answer",
-  "thinking sidecar active",
-  "thinking sidecar opened",
+  "reasoning sidecar active",
+  "reasoning sidecar opened",
 ]);
 
 export function sanitizeThinkingText(raw: string): string {
@@ -177,6 +190,12 @@ export function sanitizeThinkingText(raw: string): string {
     return "";
   }
   const normalizedKey = normalized.toLowerCase();
+  if (normalizedKey === "thinking sidecar active") {
+    return "reasoning sidecar active";
+  }
+  if (normalizedKey === "thinking sidecar opened") {
+    return "reasoning sidecar opened";
+  }
   return SAFE_THINKING_STATUS_MESSAGES.has(normalizedKey) ? normalizedKey : "active";
 }
 
@@ -362,7 +381,7 @@ function buildThinkingStatusExpression(): string {
     const existingPanel = findThinkingPanel();
     if (existingPanel) {
       return {
-        message: 'thinking sidecar active',
+        message: 'reasoning sidecar active',
         source: 'sidecar',
         progressPercent: findProgressPercent(existingPanel),
         panelOpened: false,
@@ -386,7 +405,7 @@ function buildThinkingStatusExpression(): string {
     if (panel) {
       const progressPercent = findProgressPercent(panel);
       return {
-        message: panelOpened ? 'thinking sidecar opened' : 'thinking sidecar active',
+        message: panelOpened ? 'reasoning sidecar opened' : 'reasoning sidecar active',
         source: 'sidecar',
         progressPercent,
         panelOpened,

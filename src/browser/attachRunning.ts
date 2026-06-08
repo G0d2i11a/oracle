@@ -38,12 +38,56 @@ export async function resolveAttachRunningConnection(
   }
   const candidate = candidates[0];
   logger(`Selected attach-running browser metadata from ${candidate.path}`);
+  const browserWSEndpoint = await resolveBrowserWSEndpoint(
+    host,
+    candidate.port,
+    candidate.browserWSEndpoint,
+    logger,
+  );
   return {
     host,
     port: candidate.port,
-    browserWSEndpoint: candidate.browserWSEndpoint,
+    browserWSEndpoint,
     profileRoot: candidate.profileRoot,
   };
+}
+
+async function resolveBrowserWSEndpoint(
+  host: string,
+  port: number,
+  fallback: string,
+  logger: BrowserLogger,
+): Promise<string> {
+  if (!isBareBrowserWSEndpoint(fallback)) {
+    return fallback;
+  }
+  try {
+    const response = await fetch(`http://${formatHttpHost(host)}:${port}/json/version`);
+    if (!response.ok) {
+      return fallback;
+    }
+    const version = (await response.json()) as { webSocketDebuggerUrl?: unknown };
+    if (typeof version.webSocketDebuggerUrl === "string" && version.webSocketDebuggerUrl) {
+      logger("Resolved attach-running browser websocket endpoint from /json/version.");
+      return version.webSocketDebuggerUrl;
+    }
+  } catch {
+    // Fall back to the DevToolsActivePort value; the caller will surface connection errors.
+  }
+  return fallback;
+}
+
+function isBareBrowserWSEndpoint(endpoint: string): boolean {
+  try {
+    const url = new URL(endpoint);
+    return url.pathname.replace(/\/+$/u, "") === "/devtools/browser";
+  } catch {
+    return false;
+  }
+}
+
+function formatHttpHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
 function compareDevToolsCandidates(

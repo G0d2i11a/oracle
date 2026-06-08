@@ -357,7 +357,7 @@ describe("runBrowserSessionExecution", () => {
     ).toBe(true);
   });
 
-  test("prints browser thinking heartbeat logs even when not verbose", async () => {
+  test("prints browser response-progress heartbeat logs even when not verbose", async () => {
     const log = vi.fn();
     await runBrowserSessionExecution(
       {
@@ -379,7 +379,7 @@ describe("runBrowserSessionExecution", () => {
           fallback: null,
         }),
         executeBrowser: async ({ log: automationLog }) => {
-          automationLog?.("[browser] ChatGPT thinking - 30s elapsed; status=planning");
+          automationLog?.("[browser] ChatGPT response progress - 30s elapsed; status=planning");
           return {
             answerText: "text",
             answerMarkdown: "markdown",
@@ -390,7 +390,9 @@ describe("runBrowserSessionExecution", () => {
         },
       },
     );
-    expect(log.mock.calls.some((call) => String(call[0]).includes("ChatGPT thinking"))).toBe(true);
+    expect(
+      log.mock.calls.some((call) => String(call[0]).includes("ChatGPT response progress")),
+    ).toBe(true);
   });
 
   test("prints browser follow-up progress logs even when not verbose", async () => {

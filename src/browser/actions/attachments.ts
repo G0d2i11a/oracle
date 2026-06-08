@@ -27,9 +27,17 @@ function attachmentNameMatchesExpected(value: string, expected: string): boolean
   return expectedNoExt.length >= 6 && normalized.includes(expectedNoExt);
 }
 
+export function isTrustedFileChooserUploadDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = String(env.ORACLE_BROWSER_DISABLE_TRUSTED_FILE_CHOOSER ?? "")
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 export async function uploadAttachmentFile(
   deps: {
     runtime: ChromeClient["Runtime"];
+    page?: ChromeClient["Page"];
     dom?: ChromeClient["DOM"];
     input?: ChromeClient["Input"];
   },
@@ -37,7 +45,7 @@ export async function uploadAttachmentFile(
   logger: BrowserLogger,
   options?: { expectedCount?: number },
 ): Promise<boolean> {
-  const { runtime, dom, input } = deps;
+  const { runtime, page, dom, input } = deps;
   if (!dom) {
     throw new Error("DOM domain unavailable while uploading attachments.");
   }
@@ -760,6 +768,249 @@ export async function uploadAttachmentFile(
     return latest;
   };
 
+  let confirmedAttachment = false;
+
+  const attemptTrustedFileChooserUpload = async (): Promise<boolean> => {
+    if (!page || !input || !dom || typeof input.dispatchMouseEvent !== "function") {
+      logger("Trusted file chooser unavailable; falling back to direct file input upload.");
+      return false;
+    }
+    type FileChooserEvent = {
+      backendNodeId?: number;
+      nodeId?: number;
+      mode?: string;
+    };
+    type FileChooserPage = ChromeClient["Page"] & {
+      setInterceptFileChooserDialog?: (params: {
+        enabled: boolean;
+        cancel?: boolean;
+      }) => Promise<void>;
+      fileChooserOpened?: (handler: (params: FileChooserEvent) => void) => void;
+      off?: (event: string, handler: (params: FileChooserEvent) => void) => void;
+      removeListener?: (event: string, handler: (params: FileChooserEvent) => void) => void;
+    };
+    const chooserPage = page as FileChooserPage;
+    if (
+      typeof chooserPage.setInterceptFileChooserDialog !== "function" ||
+      typeof chooserPage.fileChooserOpened !== "function"
+    ) {
+      logger(
+        "CDP file chooser interception unavailable; falling back to direct file input upload.",
+      );
+      return false;
+    }
+
+    const dispatchTrustedClick = async (point: { x: number; y: number }) => {
+      await input.dispatchMouseEvent({ type: "mouseMoved", x: point.x, y: point.y });
+      await input.dispatchMouseEvent({
+        type: "mousePressed",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        clickCount: 1,
+      });
+      await input.dispatchMouseEvent({
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        clickCount: 1,
+      });
+    };
+
+    const locateUploadMenuItem = async () => {
+      const response = await runtime.evaluate({
+        expression: `(() => {
+          const isVisible = (node) => {
+            if (!(node instanceof HTMLElement)) return false;
+            const rect = node.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            const style = window.getComputedStyle(node);
+            return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+          };
+          const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+          const labelFor = (node) => normalize([
+            node?.innerText,
+            node?.textContent,
+            node?.getAttribute?.('aria-label'),
+            node?.getAttribute?.('title'),
+          ].filter(Boolean).join(' '));
+          const uploadPattern = /(add photos?\\s*(?:&|and)?\\s*files?|add files?|upload files?|attach files?|上传|添加文件|添加照片|附件)/i;
+          const items = Array.from(document.querySelectorAll('[role="menuitem"], [data-radix-collection-item]'));
+          for (const item of items) {
+            if (!isVisible(item)) continue;
+            const label = labelFor(item);
+            if (!uploadPattern.test(label)) continue;
+            const rect = item.getBoundingClientRect();
+            return {
+              ok: true,
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+              label,
+            };
+          }
+          return { ok: false };
+        })()`,
+        returnByValue: true,
+      });
+      return response?.result?.value as
+        | { ok?: boolean; x?: number; y?: number; label?: string }
+        | undefined;
+    };
+
+    const locatePlusButton = async () => {
+      const response = await runtime.evaluate({
+        expression: `(() => {
+          const selectors = [
+            '#composer-plus-btn',
+            'button[data-testid="composer-plus-btn"]',
+            '[data-testid*="plus"]',
+            'button[aria-label*="Add files"]',
+            'button[aria-label*="add files"]',
+            'button[aria-label*="attachment"]',
+            'button[aria-label*="file"]',
+          ];
+          for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (!(el instanceof HTMLElement)) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+            el.scrollIntoView({ block: 'center', inline: 'center' });
+            const nextRect = el.getBoundingClientRect();
+            return {
+              ok: true,
+              open: el.getAttribute('aria-expanded') === 'true' || el.getAttribute('data-state') === 'open',
+              x: nextRect.left + nextRect.width / 2,
+              y: nextRect.top + nextRect.height / 2,
+            };
+          }
+          return { ok: false };
+        })()`,
+        returnByValue: true,
+      });
+      return response?.result?.value as
+        | { ok?: boolean; open?: boolean; x?: number; y?: number }
+        | undefined;
+    };
+
+    const waitForChooser = async (timeoutMs: number): Promise<FileChooserEvent | null> => {
+      let settled = false;
+      let handler: ((params: FileChooserEvent) => void) | null = null;
+      return await new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          if (handler) {
+            try {
+              chooserPage.off?.("fileChooserOpened", handler);
+            } catch {
+              try {
+                chooserPage.removeListener?.("fileChooserOpened", handler);
+              } catch {
+                // Best effort cleanup only.
+              }
+            }
+          }
+          resolve(null);
+        }, timeoutMs);
+        handler = (params: FileChooserEvent) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          if (handler) {
+            try {
+              chooserPage.off?.("fileChooserOpened", handler);
+            } catch {
+              try {
+                chooserPage.removeListener?.("fileChooserOpened", handler);
+              } catch {
+                // Best effort cleanup only.
+              }
+            }
+          }
+          resolve(params);
+        };
+        chooserPage.fileChooserOpened?.(handler);
+      });
+    };
+
+    await chooserPage.setInterceptFileChooserDialog({ enabled: true, cancel: true });
+    try {
+      let chooser: FileChooserEvent | null = null;
+      let menuItem = await locateUploadMenuItem();
+      if (!menuItem?.ok) {
+        const plus = await locatePlusButton();
+        if (!plus?.ok || typeof plus.x !== "number" || typeof plus.y !== "number") {
+          logger(
+            "ChatGPT upload menu trigger not found; falling back to direct file input upload.",
+          );
+          return false;
+        }
+        if (!plus.open) {
+          await dispatchTrustedClick({ x: plus.x, y: plus.y });
+          await delay(350);
+        }
+        menuItem = await locateUploadMenuItem();
+      }
+      if (!menuItem?.ok || typeof menuItem.x !== "number" || typeof menuItem.y !== "number") {
+        logger("ChatGPT upload menu item not found; falling back to direct file input upload.");
+        return false;
+      }
+
+      const chooserPromise = waitForChooser(3_000);
+      await dispatchTrustedClick({ x: menuItem.x, y: menuItem.y });
+      chooser = await chooserPromise;
+      if (!chooser?.backendNodeId && !chooser?.nodeId) {
+        logger("ChatGPT file chooser did not open; falling back to direct file input upload.");
+        return false;
+      }
+      logger(
+        `Uploading attachment via ChatGPT file chooser${chooser.mode ? ` (${chooser.mode})` : ""}`,
+      );
+      const params = chooser.backendNodeId
+        ? { backendNodeId: chooser.backendNodeId, files: [attachment.path] }
+        : { nodeId: chooser.nodeId as number, files: [attachment.path] };
+      await (
+        dom as unknown as {
+          setFileInputFiles: (params: {
+            backendNodeId?: number;
+            nodeId?: number;
+            files: string[];
+          }) => Promise<void>;
+        }
+      ).setFileInputFiles(params);
+
+      const trustedSignal = await waitForAttachmentUiSignal(attachmentUiSignalWaitMs);
+      const trustedSignals = trustedSignal?.signals;
+      if (
+        trustedSignals?.ui ||
+        (trustedSignals ? isExpectedSatisfied(trustedSignals) : false) ||
+        Boolean(trustedSignal?.chipDelta) ||
+        Boolean(trustedSignal?.uploadDelta) ||
+        Boolean(trustedSignal?.fileCountDelta)
+      ) {
+        return true;
+      }
+      logger(
+        "Trusted file chooser did not produce attachment UI; falling back to direct file input upload.",
+      );
+      return false;
+    } catch (error) {
+      logger(`Trusted file chooser upload failed: ${(error as Error)?.message ?? String(error)}`);
+      return false;
+    } finally {
+      await chooserPage.setInterceptFileChooserDialog({ enabled: false }).catch(() => undefined);
+    }
+  };
+
+  if (isTrustedFileChooserUploadDisabled()) {
+    logger(
+      "Trusted file chooser upload disabled by ORACLE_BROWSER_DISABLE_TRUSTED_FILE_CHOOSER; using direct file input upload.",
+    );
+  } else if (await attemptTrustedFileChooserUpload()) {
+    confirmedAttachment = true;
+  }
+
   const inputSnapshotFor = (idx: number) => `(() => {
     const input = document.querySelector('input[type="file"][data-oracle-upload-idx="${idx}"]');
     if (!(input instanceof HTMLInputElement)) {
@@ -912,7 +1163,6 @@ export async function uploadAttachmentFile(
     };
   })()`;
 
-  let confirmedAttachment = false;
   let lastInputNames: string[] = [];
   let lastInputValue = "";
   let finalSnapshot: {
@@ -930,7 +1180,7 @@ export async function uploadAttachmentFile(
     }
     return lastInputNames;
   };
-  if (!inputConfirmed) {
+  if (!confirmedAttachment && !inputConfirmed) {
     for (let orderIndex = 0; orderIndex < candidateOrder.length; orderIndex += 1) {
       const idx = candidateOrder[orderIndex];
       const queuedSignals = await readAttachmentSignals(expectedName);

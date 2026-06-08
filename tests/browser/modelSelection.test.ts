@@ -279,5 +279,6 @@ describe("browser model selection matchers", () => {
     const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
     expect(expression).toContain('data-testid="model-switcher-dropdown-button"');
     expect(expression).toContain("button.__composer-pill[aria-haspopup=");
+    expect(expression).toContain("button.__composer-pill");
   });
 });

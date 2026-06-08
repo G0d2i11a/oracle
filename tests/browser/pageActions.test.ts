@@ -13,6 +13,7 @@ import {
 import * as attachments from "../../src/browser/actions/attachments.js";
 import * as attachmentDataTransfer from "../../src/browser/actions/attachmentDataTransfer.js";
 import { buildResponseObserverExpressionForTest } from "../../src/browser/actions/assistantResponse.js";
+import { readVisibleChatGptErrorForTest } from "../../src/browser/actions/chatgptErrors.js";
 import type { ChromeClient } from "../../src/browser/types.js";
 
 const logger = vi.fn();
@@ -362,6 +363,49 @@ describe("ensureLoggedIn", () => {
 });
 
 describe("waitForAssistantResponse", () => {
+  test("fails immediately when ChatGPT shows a visible generation error", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            message: "Something went wrong. Please try again.",
+            source: "assistant-turn",
+            retryAvailable: true,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(waitForAssistantResponse(runtime, 1000, logger)).rejects.toMatchObject({
+      name: "BrowserAutomationError",
+      details: {
+        code: "visible-chatgpt-error",
+        reason: "visible-chatgpt-error",
+        retryAvailable: true,
+      },
+    });
+  });
+
+  test("normalizes visible ChatGPT error snapshots", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            message: "  Something went wrong.   Please try again.  ",
+            source: "assistant-turn",
+            retryAvailable: true,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(readVisibleChatGptErrorForTest(runtime)).resolves.toEqual({
+      message: "Something went wrong. Please try again.",
+      source: "assistant-turn",
+      retryAvailable: true,
+    });
+  });
+
   test("returns captured assistant payload", async () => {
     const runtime = {
       evaluate: vi
@@ -842,6 +886,25 @@ describe("uploadAttachmentFile", () => {
 
   afterEach(() => {
     transferSpy.mockRestore();
+  });
+
+  test("lets operators disable the trusted file chooser upload path for A/B checks", () => {
+    expect(attachments.isTrustedFileChooserUploadDisabled({})).toBe(false);
+    expect(
+      attachments.isTrustedFileChooserUploadDisabled({
+        ORACLE_BROWSER_DISABLE_TRUSTED_FILE_CHOOSER: "0",
+      }),
+    ).toBe(false);
+    expect(
+      attachments.isTrustedFileChooserUploadDisabled({
+        ORACLE_BROWSER_DISABLE_TRUSTED_FILE_CHOOSER: "1",
+      }),
+    ).toBe(true);
+    expect(
+      attachments.isTrustedFileChooserUploadDisabled({
+        ORACLE_BROWSER_DISABLE_TRUSTED_FILE_CHOOSER: "true",
+      }),
+    ).toBe(true);
   });
 
   test.skip("selects DOM input and uploads file", async () => {

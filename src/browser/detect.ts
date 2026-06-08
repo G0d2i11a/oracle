@@ -144,11 +144,12 @@ export function resolveDevToolsActivePortDiscoveryRoots(
   platform = process.platform,
   homeDir = os.homedir(),
 ): string[] {
+  const oracleHome = path.join(homeDir, ".oracle");
   if (platform === "darwin") {
-    return [path.join(homeDir, "Library", "Application Support")];
+    return [path.join(homeDir, "Library", "Application Support"), oracleHome];
   }
   if (platform === "linux") {
-    return [path.join(homeDir, ".config"), path.join(homeDir, "snap")];
+    return [path.join(homeDir, ".config"), path.join(homeDir, "snap"), oracleHome];
   }
   if (platform === "win32") {
     return [process.env.LOCALAPPDATA ?? path.join(homeDir, "AppData", "Local")];

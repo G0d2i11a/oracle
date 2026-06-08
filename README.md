@@ -140,7 +140,7 @@ Engine auto-picks API when `OPENAI_API_KEY` is set, otherwise browser; browser i
 oracle bridge claude-config --local-browser > .mcp.json
 ```
 
-- In MCP `consult`, use `preset: "chatgpt-pro-heavy"` for ChatGPT browser mode with `gpt-5.5-pro` and Pro Extended thinking. Add `dryRun: true` to inspect the resolved run without creating a session or touching Chrome.
+- In MCP `consult`, use `preset: "chatgpt-pro-extended"` for ChatGPT browser mode with `gpt-5.5-pro` and Pro Extended. Add `dryRun: true` to inspect the resolved run without creating a session or touching Chrome. The older `chatgpt-pro-heavy` preset name is only a compatibility alias.
 
 ```bash
 npx -y @steipete/oracle oracle-mcp
@@ -162,7 +162,7 @@ npx -y @steipete/oracle oracle-mcp
 
 - Bundle once, reuse anywhere (API or experimental browser).
 - Multi-model API runs with aggregated cost/usage, including OpenRouter IDs alongside first-party models.
-- Claude Code / MCP browser consults can use the `chatgpt-pro-heavy` preset for a compact ChatGPT Pro second-opinion workflow.
+- Claude Code / MCP browser consults can use the `chatgpt-pro-extended` preset for a compact ChatGPT Pro second-opinion workflow.
 - Render/copy bundles for manual paste into ChatGPT when automation is blocked.
 - GPT‑5 Pro API runs detach by default; reattach via `oracle session <id>` / `oracle status` or block with `--wait`.
 - Follow-up runs can continue OpenAI/Azure API sessions from `--followup <sessionId|responseId>` and browser sessions from `--engine browser --followup <sessionId>`; for multi-model API parents, add `--followup-model <model>`.
@@ -256,7 +256,7 @@ Browser automation can open or control Chrome, so dry-runs and live runs print a
 | `--browser-manual-login`                                        | Skip cookie copy; reuse a persistent automation profile and wait for manual ChatGPT login.                                                                                                                                                                                                                                                |
 | `--browser-attach-running`                                      | Reuse your current local browser session through local `DevToolsActivePort` discovery; Oracle opens a dedicated tab instead of launching Chrome (defaults to `127.0.0.1:9222`, or combine with `--remote-chrome <host:port>` to hint a different local endpoint).                                                                         |
 | `--browser-tab <ref>`                                           | Reuse an existing ChatGPT tab by `current`, target id, URL, or title substring instead of opening a new tab.                                                                                                                                                                                                                              |
-| `--browser-thinking-time <light\|standard\|extended\|heavy>`    | Set ChatGPT thinking-time intensity (browser; Thinking/Pro models only).                                                                                                                                                                                                                                                                  |
+| `--browser-thinking-time <light\|standard\|extended\|heavy>`    | Historical flag name for ChatGPT response effort; use `extended` for GPT-5.5 Pro Extended.                                                                                                                                                                                                                                                |
 | `--browser-research deep`                                       | Activate ChatGPT Deep Research for broad web research and cited reports (browser only).                                                                                                                                                                                                                                                   |
 | `--browser-follow-up <prompt>`                                  | Browser-only multi-turn consult: submit an additional prompt in the same ChatGPT conversation after the initial answer. Repeat for challenge/revision/final-decision passes. Not supported with Deep Research mode.                                                                                                                       |
 | `--browser-archive <auto\|always\|never>`                       | Archive completed ChatGPT browser conversations after local artifacts are saved. `auto` archives successful one-shot chats only, and skips project, Deep Research, multi-turn, failed, and incomplete sessions.                                                                                                                           |

@@ -15,6 +15,7 @@ import {
 import { buildClickDispatcher } from "./domEvents.js";
 import { readThinkingStatus } from "./thinkingStatus.js";
 import { buildVisibleStopButtonFunction } from "./stopButton.js";
+import { readVisibleChatGptError, throwIfVisibleChatGptError } from "./chatgptErrors.js";
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
 const ASSISTANT_ACTIVE_TIMEOUT_EXTENSION_MS = 60_000;
@@ -129,6 +130,7 @@ export async function waitForAssistantResponse(
 }> {
   const start = Date.now();
   logger("Waiting for ChatGPT response");
+  await throwIfVisibleChatGptError(Runtime, { minTurnIndex, expectedConversationId });
   // Learned: two paths are needed:
   // 1) DOM observer (fast when mutations fire),
   // 2) snapshot poller (fallback when observers miss or JS stalls).
@@ -219,6 +221,7 @@ export async function waitForAssistantResponse(
     throw new Error("Failed to capture assistant response");
   }
 
+  await throwIfVisibleChatGptError(Runtime, { minTurnIndex, expectedConversationId });
   const parsed = await parseAssistantEvaluationResult(Runtime, evaluation, logger);
   if (!parsed) {
     let remainingMs = Math.max(0, timeoutMs - (Date.now() - start));
@@ -405,11 +408,13 @@ async function recoverAssistantResponse(
   }
   const recovered = await waitForCondition(
     async () => {
+      await throwIfVisibleChatGptError(Runtime, { minTurnIndex, expectedConversationId });
       const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId);
       const normalized = normalizeAssistantSnapshot(snapshot);
       if (!normalized) {
         return null;
       }
+      await throwIfVisibleChatGptError(Runtime, { minTurnIndex, expectedConversationId });
       const [active, completionVisible] = await Promise.all([
         isAssistantProgressActive(Runtime),
         isCompletionVisible(Runtime),
@@ -583,6 +588,7 @@ async function pollAssistantCompletion(
     if (abortSignal?.aborted) {
       return null;
     }
+    await throwIfVisibleChatGptError(Runtime, { minTurnIndex, expectedConversationId });
     if (Date.now() >= watchdogDeadline) {
       const stillActive = await isAssistantProgressActive(Runtime);
       if (!stillActive) {
@@ -681,11 +687,12 @@ async function isCompletionVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
 
 async function isAssistantProgressActive(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
   try {
-    const [stopVisible, thinkingStatus] = await Promise.all([
+    const [visibleError, stopVisible, thinkingStatus] = await Promise.all([
+      readVisibleChatGptError(Runtime).catch(() => null),
       isStopButtonVisible(Runtime),
       readThinkingStatus(Runtime).catch(() => null),
     ]);
-    return stopVisible || Boolean(thinkingStatus);
+    return !visibleError && (stopVisible || Boolean(thinkingStatus));
   } catch {
     return false;
   }

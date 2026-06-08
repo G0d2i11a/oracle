@@ -616,7 +616,7 @@ program
   .addOption(
     new Option(
       "--browser-thinking-time <level>",
-      "Thinking time intensity for Thinking/Pro models: light, standard, extended, heavy.",
+      "Historical flag name for ChatGPT response effort; use extended for GPT-5.5 Pro Extended.",
     )
       .choices(["light", "standard", "extended", "heavy"])
       .hideHelp(),

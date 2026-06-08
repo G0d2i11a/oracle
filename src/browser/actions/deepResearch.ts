@@ -195,6 +195,7 @@ export async function waitForDeepResearchCompletion(
           textLength?: number;
           hasIframe?: boolean;
           hasActiveScopedResearch?: boolean;
+          expandableReport?: boolean;
           accountBlocked?: boolean;
         }
       | undefined;
@@ -226,7 +227,7 @@ export async function waitForDeepResearchCompletion(
     }
 
     // Completion detected
-    if (val?.finished) {
+    if (val?.finished || (!val?.stopVisible && val?.expandableReport)) {
       logger(`Deep Research completed (${Math.round((Date.now() - start) / 1000)}s elapsed)`);
       return await extractDeepResearchResult(Runtime, logger, minTurnIndex ?? undefined);
     }
@@ -289,6 +290,8 @@ export async function extractDeepResearchResult(
   html?: string;
   meta: { turnId?: string | null; messageId?: string | null };
 }> {
+  await expandDeepResearchReportCard(Runtime, logger, minTurnIndex);
+
   const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex);
   const meta = {
     turnId: snapshot?.turnId ?? null,
@@ -306,10 +309,49 @@ export async function extractDeepResearchResult(
     return { text: snapshot.text, html: snapshot.html ?? undefined, meta };
   }
 
+  const expandedReport = await readExpandedDeepResearchReport(Runtime, minTurnIndex);
+  if (expandedReport?.text && !isDeepResearchPlaceholderText(expandedReport.text)) {
+    return { text: expandedReport.text, html: expandedReport.html, meta };
+  }
+
   throw new BrowserAutomationError(
     "Deep Research completed but failed to extract the response text.",
     { stage: "deep-research-extract", code: "extraction-failed" },
   );
+}
+
+async function expandDeepResearchReportCard(
+  Runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+  minTurnIndex?: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const { result } = await Runtime.evaluate({
+      expression: buildExpandDeepResearchReportCardExpression(minTurnIndex),
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const value = result?.value as
+      | { clicked?: boolean; label?: string; reason?: string }
+      | undefined;
+    if (!value?.clicked) {
+      return;
+    }
+    logger(`Expanded Deep Research report card${value.label ? `: ${value.label}` : ""}`);
+    await delay(800);
+  }
+}
+
+async function readExpandedDeepResearchReport(
+  Runtime: ChromeClient["Runtime"],
+  minTurnIndex?: number,
+): Promise<{ text: string; html?: string } | null> {
+  const { result } = await Runtime.evaluate({
+    expression: buildReadExpandedDeepResearchReportExpression(minTurnIndex),
+    returnByValue: true,
+  });
+  const value = result?.value as { text?: string; html?: string } | null | undefined;
+  return value?.text ? { text: value.text, html: value.html } : null;
 }
 
 function isDeepResearchPlaceholderText(text: string): boolean {
@@ -744,6 +786,7 @@ function buildDeepResearchCompletionPollExpression(minTurnIndex: number): string
   return `(() => {
     const MIN_TURN_INDEX = ${minTurnIndex};
     ${buildVisibleStopButtonFunction("hasVisibleStopButton")}
+    ${buildDeepResearchReportCardFinder("findExpandableDeepResearchReportButton")}
     const stopVisible = hasVisibleStopButton();
     const scopedToNewTurns = MIN_TURN_INDEX >= 0;
     const pageText = String(document.body?.innerText || '').toLowerCase().replace(/\\s+/g, ' ');
@@ -770,7 +813,9 @@ function buildDeepResearchCompletionPollExpression(minTurnIndex: number): string
       normalized === 'used tool' ||
       normalized === 'użyto narzędzia' ||
       normalized === 'narzędzie wywołane';
-    const finished = Boolean(lastTurn?.querySelector(${finishedSelector})) &&
+    const completionUiVisible = Boolean(lastTurn?.querySelector(${finishedSelector}));
+    const expandableReport = !stopVisible && Boolean(lastTurn && findExpandableDeepResearchReportButton(lastTurn));
+    const finished = !stopVisible && completionUiVisible &&
       textLength >= 40 &&
       !isToolStub;
     const hasIframe = Array.from(document.querySelectorAll('iframe')).some(f => {
@@ -779,7 +824,7 @@ function buildDeepResearchCompletionPollExpression(minTurnIndex: number): string
     });
     const hasActiveScopedResearch = scopedToNewTurns && Boolean(lastTurn) && hasIframe &&
       (textLength < 40 || isToolStub || /chatgpt\\s+said:?$/i.test(text));
-    return { finished, stopVisible, textLength, hasIframe, isToolStub, hasActiveScopedResearch, accountBlocked };
+    return { finished, stopVisible, textLength, hasIframe, isToolStub, hasActiveScopedResearch, expandableReport, accountBlocked };
   })()`;
 }
 
@@ -789,6 +834,174 @@ export function buildDeepResearchStatusExpressionForTest(): string {
 
 export function buildDeepResearchCompletionPollExpressionForTest(minTurnIndex = -1): string {
   return buildDeepResearchCompletionPollExpression(minTurnIndex);
+}
+
+function buildExpandDeepResearchReportCardExpression(minTurnIndex?: number): string {
+  const minTurnLiteral =
+    typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
+      ? Math.floor(minTurnIndex)
+      : -1;
+  const turnSelector = JSON.stringify(CONVERSATION_TURN_SELECTOR);
+  return `(async () => {
+    const MIN_TURN_INDEX = ${minTurnLiteral};
+    const TURN_SELECTOR = ${turnSelector};
+    ${buildClickDispatcher()}
+    ${buildDeepResearchTurnFinder("findLastDeepResearchAssistantTurn")}
+    ${buildDeepResearchReportCardFinder("findExpandableDeepResearchReportButton")}
+    const turn = findLastDeepResearchAssistantTurn(TURN_SELECTOR, MIN_TURN_INDEX);
+    if (!turn) return { clicked: false, reason: 'no-assistant-turn' };
+    const button = findExpandableDeepResearchReportButton(turn);
+    if (!button) return { clicked: false, reason: 'no-expand-control' };
+    const label = String([
+      button.textContent,
+      button.getAttribute?.('aria-label'),
+      button.getAttribute?.('title'),
+      button.getAttribute?.('data-testid'),
+    ].filter(Boolean).join(' ')).replace(/\\s+/g, ' ').trim();
+    dispatchClickSequence(button);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return { clicked: true, label };
+  })()`;
+}
+
+function buildReadExpandedDeepResearchReportExpression(minTurnIndex?: number): string {
+  const minTurnLiteral =
+    typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
+      ? Math.floor(minTurnIndex)
+      : -1;
+  const turnSelector = JSON.stringify(CONVERSATION_TURN_SELECTOR);
+  return `(() => {
+    const MIN_TURN_INDEX = ${minTurnLiteral};
+    const TURN_SELECTOR = ${turnSelector};
+    ${buildDeepResearchTurnFinder("findLastDeepResearchAssistantTurn")}
+    const isVisible = (node) => {
+      if (!node || (typeof HTMLElement !== 'undefined' && !(node instanceof HTMLElement))) return false;
+      if (typeof node.getBoundingClientRect !== 'function') return true;
+      const rect = node.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+      if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') return true;
+      const style = window.getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+    };
+    const normalizeReport = (text) => {
+      const lines = String(text || '')
+        .split(/\\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter((line) => !/^\\d+$/.test(line))
+        .filter((line) => !/^(copy|share|thumbs up|thumbs down)$/i.test(line));
+      const reportIndex = lines.findIndex((line) => /deep research report/i.test(line));
+      const candidates = reportIndex >= 0 ? lines.slice(reportIndex) : lines;
+      return candidates.join('\\n').trim();
+    };
+    const roots = [
+      findLastDeepResearchAssistantTurn(TURN_SELECTOR, MIN_TURN_INDEX),
+      ...Array.from(document.querySelectorAll('[role="dialog"], [data-testid*="deep"], [data-testid*="research"], article, section')),
+    ].filter(Boolean);
+    let best = null;
+    for (const root of roots) {
+      if (!isVisible(root)) continue;
+      const raw = String(root.innerText || root.textContent || '').trim();
+      const normalized = raw.toLowerCase().replace(/\\s+/g, ' ');
+      if (
+        raw.length < 80 ||
+        !(
+          normalized.includes('deep research report') ||
+          normalized.includes('research completed') ||
+          (normalized.includes('citations') && normalized.includes('sources')) ||
+          (normalized.includes('searches') && normalized.includes('sources'))
+        )
+      ) {
+        continue;
+      }
+      const text = normalizeReport(raw);
+      if (!best || text.length > best.text.length) {
+        best = { text, html: root.innerHTML || undefined };
+      }
+    }
+    return best;
+  })()`;
+}
+
+function buildDeepResearchTurnFinder(functionName: string): string {
+  return `const ${functionName} = (turnSelector, minTurnIndex) => {
+    const isAssistantTurn = (node) => {
+      if (!node || (typeof HTMLElement !== 'undefined' && !(node instanceof HTMLElement))) return false;
+      const attr = String(node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+      return attr === 'assistant' ||
+        Boolean(node.querySelector('[data-message-author-role="assistant"], [data-turn="assistant"]')) ||
+        (String(node.getAttribute('data-testid') || '').toLowerCase().includes('conversation-turn') &&
+          /chatgpt\\s+said/i.test(node.innerText || node.textContent || ''));
+    };
+    const conversationTurns = Array.from(document.querySelectorAll(turnSelector));
+    const allAssistantTurns = Array.from(document.querySelectorAll('[data-message-author-role="assistant"], [data-turn="assistant"]'));
+    const scopedTurns = minTurnIndex >= 0
+      ? conversationTurns.slice(minTurnIndex).filter(isAssistantTurn)
+      : allAssistantTurns;
+    return scopedTurns[scopedTurns.length - 1] ||
+      (minTurnIndex >= 0 ? null : allAssistantTurns[allAssistantTurns.length - 1]) ||
+      null;
+  };`;
+}
+
+function buildDeepResearchReportCardFinder(functionName: string): string {
+  return `const ${functionName} = (root) => {
+    if (!root) return null;
+    const isVisible = (node) => {
+      if (!node || (typeof HTMLElement !== 'undefined' && !(node instanceof HTMLElement))) return false;
+      if (typeof node.getBoundingClientRect !== 'function') return true;
+      const rect = node.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+      if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') return true;
+      const style = window.getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+    };
+    const labelFor = (node) =>
+      String([
+        node.textContent,
+        node.getAttribute?.('aria-label'),
+        node.getAttribute?.('title'),
+        node.getAttribute?.('data-testid'),
+      ].filter(Boolean).join(' ')).toLowerCase().replace(/\\s+/g, ' ').trim();
+    const rootText = String(root.innerText || root.textContent || '').toLowerCase().replace(/\\s+/g, ' ');
+    const rootHasResearchContext =
+      rootText.includes('deep research') ||
+      rootText.includes('research completed') ||
+      rootText.includes('research report') ||
+      rootText.includes('citations') ||
+      rootText.includes('sources') ||
+      rootText.includes('searches');
+    const ignored = /(copy|share|good response|bad response|thumb|more actions|stop|send|citation|source)$/i;
+    const candidates = Array.from(root.querySelectorAll('button, [role="button"], a, summary, [aria-expanded="false"]'));
+    for (const candidate of candidates) {
+      if (!isVisible(candidate)) continue;
+      if (candidate.hasAttribute?.('disabled') || candidate.getAttribute?.('aria-disabled') === 'true') continue;
+      const label = labelFor(candidate);
+      if (!label || ignored.test(label)) continue;
+      const expanded = String(candidate.getAttribute?.('aria-expanded') || '').toLowerCase();
+      const hasResearchLabel =
+        label.includes('deep research') ||
+        label.includes('research report') ||
+        label.includes('view report') ||
+        label.includes('open report') ||
+        label.includes('show report') ||
+        label.includes('read report') ||
+        label.includes('expand report') ||
+        label.includes('view full report') ||
+        label.includes('open full report') ||
+        label.includes('expand') ||
+        label.includes('show more');
+      if (expanded === 'true') continue;
+      if ((expanded === 'false' && (rootHasResearchContext || hasResearchLabel)) || hasResearchLabel) {
+        return candidate;
+      }
+    }
+    return null;
+  };`;
+}
+
+export function buildExpandDeepResearchReportCardExpressionForTest(minTurnIndex?: number): string {
+  return buildExpandDeepResearchReportCardExpression(minTurnIndex);
 }
 
 function buildActivateDeepResearchExpression(): string {

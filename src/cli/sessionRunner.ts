@@ -545,7 +545,7 @@ export async function performSessionRun({
         userErrorDetails?.thinkingActive === true ||
         (Array.isArray(userErrorDetails?.reasons) &&
           userErrorDetails.reasons.some(
-            (reason) => reason === "stop-visible" || reason === "thinking-active",
+            (reason) => reason === "stop-visible" || reason === "response-progress-active",
           )));
     const cloudflareChallenge =
       userError?.category === "browser-automation" &&

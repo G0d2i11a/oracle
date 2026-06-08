@@ -623,6 +623,29 @@ function buildLoginProbeExpression(timeoutMs: number): string {
       return false;
     };
 
+    const hasAuthenticatedUiSignals = () => {
+      const hasPromptInput = Boolean(
+        document.querySelector('textarea,[contenteditable="true"],[data-testid="composer-plus-btn"]'),
+      );
+      const hasProfileMenu = Boolean(document.querySelector('[data-testid="accounts-profile-button"]'));
+      const hasNewChat = Boolean(document.querySelector('[data-testid="create-new-chat-button"]'));
+      const hasUserScopedStorage = (() => {
+        try {
+          return Object.keys(localStorage || {}).some((key) => /user-[a-z0-9]/i.test(key));
+        } catch {
+          return false;
+        }
+      })();
+      const hasAuthCookie = (() => {
+        try {
+          return /(?:^|;\\s*)(?:_puid|oai-last-model-config|oai-did)=/.test(document.cookie || '');
+        } catch {
+          return false;
+        }
+      })();
+      return hasPromptInput && hasNewChat && (hasProfileMenu || hasUserScopedStorage || hasAuthCookie);
+    };
+
     const readBackendStatus = async () => {
       try {
         if (typeof fetch === 'function') {
@@ -660,14 +683,16 @@ function buildLoginProbeExpression(timeoutMs: number): string {
     }
 
     const loginSignals = domLoginCta || onAuthPage;
+    const authenticatedUiSignals = hasAuthenticatedUiSignals();
     return {
-      ok: !loginSignals && status === 200,
+      ok: !loginSignals && (status === 200 || authenticatedUiSignals),
       status,
       redirected: false,
       url: pageUrl,
       pageUrl,
       domLoginCta,
       onAuthPage,
+      authenticatedUiSignals,
       error,
     };
   })()`;

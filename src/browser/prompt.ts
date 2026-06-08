@@ -15,6 +15,7 @@ import type { BrowserAttachment } from "./types.js";
 import { buildAttachmentPlan } from "./policies.js";
 
 const DEFAULT_BROWSER_INLINE_CHAR_BUDGET = 60_000;
+const DEFAULT_BROWSER_MAX_ATTACHMENTS = 10;
 
 const MEDIA_EXTENSIONS = new Set([
   ".mp4",
@@ -99,6 +100,14 @@ async function createBundledTextAttachment(
   };
 }
 
+function resolveBrowserMaxAttachments(): number {
+  const raw = process.env.ORACLE_BROWSER_MAX_ATTACHMENTS;
+  if (!raw) return DEFAULT_BROWSER_MAX_ATTACHMENTS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_BROWSER_MAX_ATTACHMENTS;
+  return parsed;
+}
+
 export async function assembleBrowserPrompt(
   runOptions: RunOracleOptions,
   deps: AssemblePromptDeps = {},
@@ -136,9 +145,18 @@ export async function assembleBrowserPrompt(
     ? "never"
     : (runOptions.browserAttachments ?? "auto");
   const bundleRequested = Boolean(runOptions.browserBundleFiles);
+  const maxAttachments = resolveBrowserMaxAttachments();
 
-  const inlinePlan = buildAttachmentPlan(sections, { inlineFiles: true, bundleRequested });
-  const uploadPlan = buildAttachmentPlan(sections, { inlineFiles: false, bundleRequested });
+  const inlinePlan = buildAttachmentPlan(sections, {
+    inlineFiles: true,
+    bundleRequested,
+    maxAttachments,
+  });
+  const uploadPlan = buildAttachmentPlan(sections, {
+    inlineFiles: false,
+    bundleRequested,
+    maxAttachments,
+  });
 
   const baseComposerSections: string[] = [];
   if (systemPrompt) baseComposerSections.push(systemPrompt);

@@ -74,7 +74,7 @@ export interface BrowserSessionConfig {
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
   manualLoginCookieSync?: boolean;
-  /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
+  /** Historical field name for ChatGPT response effort: 'light', 'standard', 'extended', 'heavy' */
   thinkingTime?: ThinkingTimeLevel;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
   researchMode?: BrowserResearchMode;
@@ -113,6 +113,10 @@ export interface BrowserHarvestMetadata {
   blocker?: string;
   stopExists?: boolean;
   thinkingActive?: boolean;
+  reasoningUiState?: "active" | "complete" | "missing" | "unknown";
+  reasoningUiText?: string;
+  reasoningUiEvidence?: string[];
+  reasoningDowngradeSuspected?: boolean;
   deepResearchStopExists?: boolean;
   deepResearchActive?: boolean;
   completionVisible?: boolean;
@@ -922,6 +926,19 @@ async function markZombie(
         signals.push(await isPortOpen(host, runtime.chromePort));
       }
       if (signals.some(Boolean)) {
+        const inactiveTabUpdate = await resolveInactiveStaleBrowserUpdate(meta, runtime).catch(
+          () => null,
+        );
+        if (inactiveTabUpdate) {
+          if (persist) {
+            await fs.writeFile(
+              metaPath(meta.id),
+              JSON.stringify(inactiveTabUpdate, null, 2),
+              "utf8",
+            );
+          }
+          return inactiveTabUpdate;
+        }
         return meta;
       }
     }
@@ -937,6 +954,141 @@ async function markZombie(
     await fs.writeFile(metaPath(meta.id), JSON.stringify(updated, null, 2), "utf8");
   }
   return updated;
+}
+
+async function resolveInactiveStaleBrowserUpdate(
+  meta: SessionMetadata,
+  runtime: BrowserRuntimeMetadata,
+): Promise<SessionMetadata | null> {
+  const liveTab = await inspectLiveBrowserRuntimeTab(runtime);
+  if (!liveTab) {
+    return null;
+  }
+  if (liveTab.state === "running" || liveTab.stopExists) {
+    return null;
+  }
+  const harvest: BrowserHarvestMetadata = {
+    ...(meta.browser?.harvest ?? {}),
+    ...liveTab,
+    harvestedAt: new Date().toISOString(),
+  };
+  const browser = {
+    ...(meta.browser ?? {}),
+    harvest,
+  };
+  const hasAssistantOutput = liveTabHasAssistantOutput(liveTab);
+  if (liveTab.state !== "completed" || !hasAssistantOutput) {
+    const inactiveReason =
+      liveTab.blocker ??
+      (liveTab.state !== "completed"
+        ? liveTab.state
+          ? `browser-${liveTab.state}`
+          : "browser-inactive"
+        : "browser-empty");
+    return {
+      ...meta,
+      status: "error",
+      completedAt: new Date().toISOString(),
+      errorMessage: `Browser session is no longer active (${inactiveReason})`,
+      browser,
+      response: {
+        ...(meta.response ?? {}),
+        status: "error",
+        incompleteReason: meta.response?.incompleteReason ?? inactiveReason,
+      },
+    };
+  }
+  return {
+    ...meta,
+    status: "completed",
+    completedAt: new Date().toISOString(),
+    errorMessage: undefined,
+    browser,
+    response: {
+      ...(meta.response ?? {}),
+      status: "completed",
+      incompleteReason: null,
+    },
+  };
+}
+
+function liveTabHasAssistantOutput(liveTab: BrowserHarvestMetadata): boolean {
+  return Boolean(
+    (liveTab.assistantCount ?? 0) > 0 ||
+    liveTab.completionVisible ||
+    liveTab.firstAssistantSnippet ||
+    liveTab.openingLine ||
+    liveTab.lastAssistantSnippet,
+  );
+}
+
+async function inspectLiveBrowserRuntimeTab(
+  runtime: BrowserRuntimeMetadata,
+): Promise<BrowserHarvestMetadata | null> {
+  const host = runtime.chromeHost ?? "127.0.0.1";
+  const port = runtime.chromePort;
+  if (!port) {
+    return null;
+  }
+  const targets = await listChromeTargets(host, port);
+  if (!targets) {
+    return null;
+  }
+  const refs = [
+    runtime.chromeTargetId,
+    runtime.tabUrl,
+    runtime.conversationId,
+    extractConversationId(runtime.tabUrl),
+  ].filter((value): value is string => Boolean(value));
+  const target =
+    refs.length > 0
+      ? targets.find((candidate) =>
+          refs.some(
+            (ref) =>
+              candidate.id === ref ||
+              candidate.url === ref ||
+              extractConversationId(candidate.url) === ref,
+          ),
+        )
+      : undefined;
+  if (!target?.id) {
+    return null;
+  }
+  const { inspectChatGptTab } = await import("./browser/liveTabs.js");
+  const summary = await inspectChatGptTab({
+    host,
+    port,
+    target: {
+      id: target.id,
+      targetId: target.id,
+      type: "page",
+      title: target.title ?? "",
+      url: target.url ?? "",
+    },
+  });
+  return {
+    targetId: summary.targetId,
+    url: summary.url,
+    conversationId: summary.conversationId,
+    state: summary.state,
+    blocker: summary.blocker,
+    stopExists: summary.stopExists,
+    thinkingActive: summary.thinkingActive,
+    reasoningUiState: summary.reasoningUiState,
+    reasoningUiText: summary.reasoningUiText,
+    reasoningUiEvidence: summary.reasoningUiEvidence,
+    reasoningDowngradeSuspected: summary.reasoningDowngradeSuspected,
+    deepResearchStopExists: summary.deepResearchStopExists,
+    deepResearchActive: summary.deepResearchActive,
+    completionVisible: summary.completionVisible,
+    sendExists: summary.sendExists,
+    assistantCount: summary.assistantCount,
+    currentModelLabel: summary.currentModelLabel,
+    firstAssistantSnippet: summary.firstAssistantSnippet,
+    openingLine: summary.openingLine,
+    lastAssistantSnippet: summary.lastAssistantSnippet,
+    lastUserSnippet: summary.lastUserSnippet,
+  };
 }
 
 async function markDeadBrowser(
@@ -1019,7 +1171,7 @@ async function browserTabStillReachable(runtime: BrowserRuntimeMetadata): Promis
 async function listChromeTargets(
   host: string,
   port: number,
-): Promise<Array<{ id?: string; url?: string }> | null> {
+): Promise<Array<{ id?: string; url?: string; title?: string }> | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CHROME_RUNTIME_TIMEOUT_MS);
   try {
@@ -1034,11 +1186,14 @@ async function listChromeTargets(
       return null;
     }
     return parsed
-      .filter((entry): entry is { id?: string; url?: string; type?: string } => Boolean(entry))
+      .filter((entry): entry is { id?: string; url?: string; title?: string; type?: string } =>
+        Boolean(entry),
+      )
       .filter((entry) => !entry.type || entry.type === "page")
       .map((entry) => ({
         id: typeof entry.id === "string" ? entry.id : undefined,
         url: typeof entry.url === "string" ? entry.url : undefined,
+        title: typeof entry.title === "string" ? entry.title : undefined,
       }));
   } catch {
     return null;

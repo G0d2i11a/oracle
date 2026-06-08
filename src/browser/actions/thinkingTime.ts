@@ -16,14 +16,14 @@ type ThinkingTimeOutcome =
   | { status: "option-not-found" };
 
 /**
- * Selects a specific thinking time level in ChatGPT's composer.
+ * Selects a specific response-effort level in ChatGPT's composer.
  *
  * Best-effort: if the chip / menu / option is missing (e.g. ChatGPT moved the
  * effort selector into the per-model trailing button and we can't navigate it,
  * or the language pack uses tokens we don't yet match), we log a debug dump
  * and continue with whatever effort the UI defaults to.
  *
- * @param level - The thinking time intensity: 'light', 'standard', 'extended', or 'heavy'
+ * @param level - The response-effort intensity: 'light', 'standard', 'extended', or 'heavy'
  */
 export async function ensureThinkingTime(
   Runtime: ChromeClient["Runtime"],
@@ -35,24 +35,24 @@ export async function ensureThinkingTime(
 
   switch (result?.status) {
     case "already-selected":
-      logger(`Thinking time: ${result.label ?? capitalizedLevel} (already selected)`);
+      logger(`Response effort: ${result.label ?? capitalizedLevel} (already selected)`);
       return;
     case "switched":
-      logger(`Thinking time: ${result.label ?? capitalizedLevel}`);
+      logger(`Response effort: ${result.label ?? capitalizedLevel}`);
       return;
     case "chip-not-found":
     case "menu-not-found":
     case "option-not-found": {
       await logDomFailure(Runtime, logger, `thinking-${result.status}`);
       logger(
-        `Thinking time: ${result.status.replaceAll("-", " ")} (requested ${capitalizedLevel}); continuing with ChatGPT default.`,
+        `Response effort: ${result.status.replaceAll("-", " ")} (requested ${capitalizedLevel}); continuing with ChatGPT default.`,
       );
       return;
     }
     default: {
       await logDomFailure(Runtime, logger, "thinking-time-unknown");
       logger(
-        `Thinking time: unknown outcome selecting ${capitalizedLevel}; continuing with ChatGPT default.`,
+        `Response effort: unknown outcome selecting ${capitalizedLevel}; continuing with ChatGPT default.`,
       );
       return;
     }
@@ -60,9 +60,9 @@ export async function ensureThinkingTime(
 }
 
 /**
- * Best-effort selection of a thinking time level in ChatGPT's composer pill menu.
+ * Best-effort selection of a response-effort level in ChatGPT's composer pill menu.
  * Safe by default: if the pill/menu/option isn't present, we continue without throwing.
- * @param level - The thinking time intensity: 'light', 'standard', 'extended', or 'heavy'
+ * @param level - The response-effort intensity: 'light', 'standard', 'extended', or 'heavy'
  */
 export async function ensureThinkingTimeIfAvailable(
   Runtime: ChromeClient["Runtime"],
@@ -75,28 +75,30 @@ export async function ensureThinkingTimeIfAvailable(
 
     switch (result?.status) {
       case "already-selected":
-        logger(`Thinking time: ${result.label ?? capitalizedLevel} (already selected)`);
+        logger(`Response effort: ${result.label ?? capitalizedLevel} (already selected)`);
         return true;
       case "switched":
-        logger(`Thinking time: ${result.label ?? capitalizedLevel}`);
+        logger(`Response effort: ${result.label ?? capitalizedLevel}`);
         return true;
       case "chip-not-found":
       case "menu-not-found":
       case "option-not-found":
         if (logger.verbose) {
-          logger(`Thinking time: ${result.status.replaceAll("-", " ")}; continuing with default.`);
+          logger(
+            `Response effort: ${result.status.replaceAll("-", " ")}; continuing with default.`,
+          );
         }
         return false;
       default:
         if (logger.verbose) {
-          logger("Thinking time: unknown outcome; continuing with default.");
+          logger("Response effort: unknown outcome; continuing with default.");
         }
         return false;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (logger.verbose) {
-      logger(`Thinking time selection failed (${message}); continuing with default.`);
+      logger(`Response effort selection failed (${message}); continuing with default.`);
       await logDomFailure(Runtime, logger, "thinking-time");
     }
     return false;

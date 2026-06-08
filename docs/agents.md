@@ -26,7 +26,7 @@ That's enough for most agents to discover and use Oracle correctly. The patterns
 oracle bridge claude-config --local-browser > .mcp.json
 ```
 
-That writes a `.mcp.json` configured for the local browser path, so Claude Code can call `oracle.consult` and `oracle.sessions` without any API keys. Use the MCP `consult` tool with `preset: "chatgpt-pro-heavy"` for ChatGPT GPT-5.5 Pro with Pro Extended thinking. Add `dryRun: true` to inspect the resolved bundle before sending.
+That writes a `.mcp.json` configured for the local browser path, so Claude Code can call `oracle.consult` and `oracle.sessions` without any API keys. Use the MCP `consult` tool with `preset: "chatgpt-pro-extended"` for ChatGPT GPT-5.5 Pro Extended. Add `dryRun: true` to inspect the resolved bundle before sending.
 
 See [MCP](mcp.md) for connection details and other clients.
 

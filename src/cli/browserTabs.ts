@@ -120,15 +120,35 @@ function chooseAssistantSnippet(
 function resolveSessionTabRef(meta: SessionMetadata): string {
   const runtime = meta?.browser?.runtime ?? {};
   const harvest = meta?.browser?.harvest ?? {};
-  return (
-    harvest.url ??
-    runtime.tabUrl ??
-    harvest.conversationId ??
+  const runtimeConversationRef =
+    (runtime.tabUrl && extractConversationIdFromUrl(runtime.tabUrl) ? runtime.tabUrl : undefined) ??
     runtime.conversationId ??
-    harvest.targetId ??
-    runtime.chromeTargetId ??
-    "current"
+    (runtime.tabUrl ? extractConversationIdFromUrl(runtime.tabUrl) : undefined);
+  const harvestConversationRef =
+    (harvest.url && extractConversationIdFromUrl(harvest.url) ? harvest.url : undefined) ??
+    harvest.conversationId ??
+    (harvest.url ? extractConversationIdFromUrl(harvest.url) : undefined);
+  const harvestMatchesRuntime = Boolean(
+    harvest.targetId && runtime.chromeTargetId && harvest.targetId === runtime.chromeTargetId,
   );
+  const harvestTargetIsConflicting = Boolean(
+    harvest.targetId && runtime.chromeTargetId && harvest.targetId !== runtime.chromeTargetId,
+  );
+  const harvestUrlIsAmbiguousRoot = isChatGptRootUrl(harvest.url);
+
+  if (harvestConversationRef && (harvestMatchesRuntime || !runtime.chromeTargetId)) {
+    return harvestConversationRef;
+  }
+  if (runtimeConversationRef) {
+    return runtimeConversationRef;
+  }
+  if (
+    runtime.chromeTargetId &&
+    (meta.status === "running" || harvestTargetIsConflicting || harvestUrlIsAmbiguousRoot)
+  ) {
+    return runtime.chromeTargetId;
+  }
+  return harvest.targetId ?? harvest.url ?? runtime.tabUrl ?? runtime.chromeTargetId ?? "current";
 }
 
 export function resolveSessionTabRefForTest(meta: SessionMetadata): string {
@@ -175,6 +195,217 @@ export function resolveBrowserOwnerLabelForTest(
   return resolveBrowserOwnerLabel(meta);
 }
 
+function resolveBrowserProfileLabel(meta: SessionMetadata | null | undefined): string | null {
+  const runtime = meta?.browser?.runtime ?? {};
+  const config = meta?.browser?.config ?? {};
+  const options = meta?.options?.browserConfig ?? {};
+  return (
+    runtime.userDataDir ??
+    runtime.chromeProfileRoot ??
+    config.manualLoginProfileDir ??
+    options.manualLoginProfileDir ??
+    null
+  );
+}
+
+export function resolveBrowserProfileLabelForTest(
+  meta: SessionMetadata | null | undefined,
+): string | null {
+  return resolveBrowserProfileLabel(meta);
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolvePidStatus(pid: unknown): { pid: number; alive: boolean; label: string } | null {
+  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) {
+    return null;
+  }
+  const normalizedPid = Math.trunc(pid);
+  const alive = isPidAlive(normalizedPid);
+  return {
+    pid: normalizedPid,
+    alive,
+    label: `${normalizedPid}(${alive ? "alive" : "dead"})`,
+  };
+}
+
+function formatPidStatus(
+  label: string,
+  status: ReturnType<typeof resolvePidStatus>,
+): string | null {
+  return status ? `${label}=${status.label}` : null;
+}
+
+function isChatGptRootUrl(url: string | null | undefined): boolean {
+  const value = String(url ?? "").trim();
+  if (!value) {
+    return false;
+  }
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return (
+      (host === "chatgpt.com" || host === "chat.openai.com") &&
+      (parsed.pathname === "" || parsed.pathname === "/")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isUnsavedRootConversationTab(
+  tab: Pick<
+    ChatGptTabSummary,
+    | "url"
+    | "stopExists"
+    | "thinkingActive"
+    | "assistantCount"
+    | "lastUserSnippet"
+    | "lastAssistantSnippet"
+  >,
+): boolean {
+  return Boolean(
+    isChatGptRootUrl(tab.url) &&
+    (tab.stopExists ||
+      tab.thinkingActive ||
+      tab.assistantCount > 0 ||
+      tab.lastUserSnippet ||
+      tab.lastAssistantSnippet),
+  );
+}
+
+function formatTabEvidence(
+  tab: Pick<
+    ChatGptTabSummary,
+    | "url"
+    | "stopExists"
+    | "thinkingActive"
+    | "completionVisible"
+    | "assistantCount"
+    | "lastUserSnippet"
+    | "lastAssistantSnippet"
+    | "reasoningUiState"
+    | "reasoningDowngradeSuspected"
+  >,
+): string | null {
+  const evidence: string[] = [];
+  if (isUnsavedRootConversationTab(tab)) {
+    evidence.push("root-url");
+  }
+  if (tab.stopExists) {
+    evidence.push("visible-stop-button");
+  }
+  if (tab.thinkingActive && !tab.completionVisible) {
+    evidence.push("response-progress-active");
+  }
+  if (tab.assistantCount > 0) {
+    evidence.push(`assistant-turns=${tab.assistantCount}`);
+  }
+  if (tab.lastUserSnippet) {
+    evidence.push("last-user-present");
+  }
+  if (tab.lastAssistantSnippet) {
+    evidence.push("last-assistant-present");
+  }
+  if (tab.reasoningUiState === "complete") {
+    evidence.push("reasoning-ui-complete");
+  } else if (tab.reasoningUiState === "active") {
+    evidence.push("reasoning-ui-active");
+  } else if (tab.reasoningDowngradeSuspected || tab.reasoningUiState === "missing") {
+    evidence.push("reasoning-ui-missing");
+  }
+  return evidence.length > 0 ? evidence.join(",") : null;
+}
+
+function formatReasoningUiSignal(
+  tab: Pick<ChatGptTabSummary, "reasoningUiState" | "reasoningDowngradeSuspected">,
+): string | null {
+  if (!tab.reasoningUiState && !tab.reasoningDowngradeSuspected) {
+    return null;
+  }
+  const state = tab.reasoningUiState ?? "unknown";
+  const parts = [`reasoningUi=${state}`];
+  if (tab.reasoningDowngradeSuspected) {
+    parts.push("downgrade=suspect");
+  }
+  return parts.join(" ");
+}
+
+function formatReasoningUiDetail(
+  tab: Pick<
+    ChatGptTabSummary,
+    "reasoningUiState" | "reasoningUiText" | "reasoningUiEvidence" | "reasoningDowngradeSuspected"
+  >,
+): string | null {
+  if (!tab.reasoningUiState && !tab.reasoningDowngradeSuspected) {
+    return null;
+  }
+  const state = tab.reasoningUiState ?? "unknown";
+  const text = snippet(tab.reasoningUiText ?? "", 100);
+  const evidence = Array.isArray(tab.reasoningUiEvidence)
+    ? tab.reasoningUiEvidence.filter(Boolean).join(",")
+    : "";
+  const suffix = tab.reasoningDowngradeSuspected ? " downgrade=suspect" : "";
+  const evidenceSuffix = evidence ? ` evidence=${evidence}` : "";
+  return text
+    ? `${state} (${text})${suffix}${evidenceSuffix}`
+    : `${state}${suffix}${evidenceSuffix}`;
+}
+
+function resolveBrowserRuntimeLabel(
+  meta: SessionMetadata | null | undefined,
+  tab?: Pick<
+    ChatGptTabSummary,
+    | "state"
+    | "blocker"
+    | "stopExists"
+    | "thinkingActive"
+    | "reasoningUiState"
+    | "reasoningDowngradeSuspected"
+    | "completionVisible"
+    | "authenticated"
+    | "sendExists"
+    | "promptReady"
+    | "assistantCount"
+  >,
+): string | null {
+  if (!meta) {
+    return null;
+  }
+  const runtime = meta.browser?.runtime ?? {};
+  const controllerPid = resolvePidStatus(runtime.controllerPid);
+  const chromePid = resolvePidStatus(runtime.chromePid);
+  const staleRunningStatus = Boolean(
+    meta.status === "running" &&
+    tab &&
+    !isBrowserTabActive(tab) &&
+    controllerPid &&
+    !controllerPid.alive,
+  );
+  const parts = [
+    meta.status ? `status=${meta.status}${staleRunningStatus ? "(stale)" : ""}` : null,
+    tab ? "cdp=reachable" : null,
+    formatPidStatus("controllerPid", controllerPid),
+    formatPidStatus("chromePid", chromePid),
+    meta.startedAt ? `startedAt=${meta.startedAt}` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
+export function resolveBrowserRuntimeLabelForTest(
+  meta: SessionMetadata | null | undefined,
+  tab?: Parameters<typeof resolveBrowserRuntimeLabel>[1],
+): string | null {
+  return resolveBrowserRuntimeLabel(meta, tab);
+}
+
 function deriveLiveTailState(
   harvested: Pick<
     ChatGptTabSummary,
@@ -189,7 +420,14 @@ function deriveLiveTailState(
   if (harvested.blocker) {
     return "blocked";
   }
-  if (harvested.stopExists || harvested.thinkingActive) {
+  if (harvested.stopExists) {
+    return "running";
+  }
+  if (
+    harvested.thinkingActive &&
+    !harvested.completionVisible &&
+    !isLowSignalAssistantSnippet(fullText)
+  ) {
     return "running";
   }
   if (harvested.authenticated && harvested.completionVisible) {
@@ -234,6 +472,8 @@ function isBrowserTabActive(
     | "blocker"
     | "stopExists"
     | "thinkingActive"
+    | "reasoningUiState"
+    | "reasoningDowngradeSuspected"
     | "completionVisible"
     | "authenticated"
     | "sendExists"
@@ -244,7 +484,14 @@ function isBrowserTabActive(
   if (tab.blocker) {
     return false;
   }
-  return tab.stopExists || tab.thinkingActive || formatBrowserTabState(tab) === "running";
+  const hasAssistantActivity = tab.assistantCount > 0;
+  const thinkingActive =
+    tab.stopExists || (tab.thinkingActive && !tab.completionVisible && hasAssistantActivity);
+  return (
+    tab.stopExists ||
+    thinkingActive ||
+    (formatBrowserTabState(tab) === "running" && !tab.completionVisible && hasAssistantActivity)
+  );
 }
 
 export function isBrowserTabActiveForTest(
@@ -254,6 +501,8 @@ export function isBrowserTabActiveForTest(
     | "blocker"
     | "stopExists"
     | "thinkingActive"
+    | "reasoningUiState"
+    | "reasoningDowngradeSuspected"
     | "completionVisible"
     | "authenticated"
     | "sendExists"
@@ -271,6 +520,8 @@ function formatBrowserSignals(
     | "blocker"
     | "stopExists"
     | "thinkingActive"
+    | "reasoningUiState"
+    | "reasoningDowngradeSuspected"
     | "completionVisible"
     | "authenticated"
     | "sendExists"
@@ -278,9 +529,24 @@ function formatBrowserSignals(
     | "assistantCount"
   >,
 ): string {
-  const thinkingActive = tab.stopExists || tab.thinkingActive;
-  const base = `active=${isBrowserTabActive(tab) ? "yes" : "no"} stop=${tab.stopExists ? "yes" : "no"} thinking=${thinkingActive ? "yes" : "no"} completeUi=${tab.completionVisible ? "yes" : "no"} send=${tab.sendExists ? "yes" : "no"}`;
-  return tab.blocker ? `${base} blocker=${tab.blocker}` : base;
+  const hasAssistantActivity = tab.assistantCount > 0;
+  const thinkingActive =
+    tab.stopExists || (tab.thinkingActive && !tab.completionVisible && hasAssistantActivity);
+  const parts = [
+    `active=${isBrowserTabActive(tab) ? "yes" : "no"}`,
+    `stop=${tab.stopExists ? "yes" : "no"}`,
+    `progress=${thinkingActive ? "yes" : "no"}`,
+    `completeUi=${tab.completionVisible ? "yes" : "no"}`,
+    `send=${tab.sendExists ? "yes" : "no"}`,
+  ];
+  const reasoningSignal = formatReasoningUiSignal(tab);
+  if (reasoningSignal) {
+    parts.push(reasoningSignal);
+  }
+  if (tab.blocker) {
+    parts.push(`blocker=${tab.blocker}`);
+  }
+  return parts.join(" ");
 }
 
 export function formatBrowserSignalsForTest(
@@ -290,6 +556,8 @@ export function formatBrowserSignalsForTest(
     | "blocker"
     | "stopExists"
     | "thinkingActive"
+    | "reasoningUiState"
+    | "reasoningDowngradeSuspected"
     | "completionVisible"
     | "authenticated"
     | "sendExists"
@@ -332,6 +600,10 @@ function buildHarvestBrowserMetadata(
       blocker: harvested.blocker,
       stopExists: harvested.stopExists,
       thinkingActive: harvested.thinkingActive,
+      reasoningUiState: harvested.reasoningUiState,
+      reasoningUiText: harvested.reasoningUiText,
+      reasoningUiEvidence: harvested.reasoningUiEvidence,
+      reasoningDowngradeSuspected: harvested.reasoningDowngradeSuspected,
       deepResearchStopExists: harvested.deepResearchStopExists,
       deepResearchActive: harvested.deepResearchActive,
       completionVisible: harvested.completionVisible,
@@ -373,6 +645,10 @@ function formatHarvestSummaryLines(
   lines.push(`URL: ${harvested.url}`);
   lines.push(`Assistant turns: ${harvested.assistantCount}`);
   lines.push(`Signals: ${formatBrowserSignals(harvested)}`);
+  const reasoningDetail = formatReasoningUiDetail(harvested);
+  if (reasoningDetail) {
+    lines.push(`Reasoning UI: ${reasoningDetail}`);
+  }
   const openingSnippet = chooseAssistantSnippet(
     harvested.openingLine || harvested.firstAssistantSnippet,
   );
@@ -425,12 +701,22 @@ function formatBrowserTabStatusLines(
   const conversationId = tab.conversationId ?? extractConversationIdFromUrl(tab.url);
   if (conversationId) {
     lines.push(`  conversation=${conversationId}`);
+  } else if (isUnsavedRootConversationTab(tab)) {
+    lines.push("  conversation=(unsaved root tab)");
   }
   if (linkedSession) {
     lines.push(`  session=${linkedSession.id}`);
     const ownerLabel = resolveBrowserOwnerLabel(linkedSession);
     if (ownerLabel) {
       lines.push(`  owner=${ownerLabel}`);
+    }
+    const profileLabel = resolveBrowserProfileLabel(linkedSession);
+    if (profileLabel) {
+      lines.push(`  profile=${profileLabel}`);
+    }
+    const runtimeLabel = resolveBrowserRuntimeLabel(linkedSession, tab);
+    if (runtimeLabel) {
+      lines.push(`  runtime=${runtimeLabel}`);
     }
   }
   const harvest = linkedSession?.browser?.harvest;
@@ -447,6 +733,19 @@ function formatBrowserTabStatusLines(
   );
   if (lastAssistantSnippet) {
     lines.push(`  last=${lastAssistantSnippet}`);
+  }
+  const showActivityDetails = isBrowserTabActive(tab) || isUnsavedRootConversationTab(tab);
+  const lastUserSnippet = chooseAssistantSnippet(tab.lastUserSnippet, harvest?.lastUserSnippet);
+  if (showActivityDetails && lastUserSnippet) {
+    lines.push(`  lastUser=${lastUserSnippet}`);
+  }
+  const evidence = showActivityDetails ? formatTabEvidence(tab) : null;
+  if (evidence) {
+    lines.push(`  evidence=${evidence}`);
+  }
+  const reasoningDetail = formatReasoningUiDetail(tab);
+  if (reasoningDetail) {
+    lines.push(`  reasoning=${reasoningDetail}`);
   }
   return lines;
 }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const CONSULT_PRESETS = ["chatgpt-pro-heavy"] as const;
+export const CONSULT_PRESETS = ["chatgpt-pro-extended", "chatgpt-pro-heavy"] as const;
 
 export const consultInputSchema = z.object({
   preset: z.enum(CONSULT_PRESETS).optional(),

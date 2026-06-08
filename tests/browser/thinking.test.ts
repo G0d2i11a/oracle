@@ -247,9 +247,11 @@ afterEach(() => {
 });
 
 describe("formatThinkingLog", () => {
-  test("renders thinking heartbeat without emoji", () => {
+  test("renders response-progress heartbeat without emoji", () => {
     const line = formatThinkingLog(0, 300_000, "planning", "");
-    expect(line).toBe("[browser] ChatGPT thinking - 5m 0s elapsed; status=active; source=inline");
+    expect(line).toBe(
+      "[browser] ChatGPT response progress - 5m 0s elapsed; status=active; source=inline",
+    );
     expect(line).not.toMatch(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/u);
   });
 
@@ -257,12 +259,12 @@ describe("formatThinkingLog", () => {
     const line = formatThinkingLog(
       0,
       1_200_000,
-      { message: "thinking sidecar active", source: "sidecar", progressPercent: 42.4 },
+      { message: "reasoning sidecar active", source: "sidecar", progressPercent: 42.4 },
       "",
       61_000,
     );
     expect(line).toBe(
-      "[browser] ChatGPT thinking - 42% UI progress, 20m 0s elapsed; status=thinking sidecar active; last change 1m 1s ago; source=sidecar",
+      "[browser] ChatGPT response progress - 42% UI progress, 20m 0s elapsed; status=reasoning sidecar active; last change 1m 1s ago; source=sidecar",
     );
   });
 
@@ -276,7 +278,7 @@ describe("formatThinkingLog", () => {
     expect(line).toContain("100% UI progress");
   });
 
-  test("keeps long unchanged thinking heartbeats informational only", () => {
+  test("keeps long unchanged response-progress heartbeats informational only", () => {
     const line = formatThinkingLog(
       0,
       900_000,
@@ -285,7 +287,7 @@ describe("formatThinkingLog", () => {
       10 * 60_000,
     );
     expect(line).toBe(
-      "[browser] ChatGPT thinking - 42% UI progress, 15m 0s elapsed; status=active; last change 10m 0s ago; source=sidecar",
+      "[browser] ChatGPT response progress - 42% UI progress, 15m 0s elapsed; status=active; last change 10m 0s ago; source=sidecar",
     );
     expect(line).not.toContain("stale");
   });
@@ -293,7 +295,7 @@ describe("formatThinkingLog", () => {
   test("renders waiting heartbeat when no status is visible", () => {
     const line = formatThinkingWaitingLog(0, 30_000);
     expect(line).toBe(
-      "[browser] Waiting for ChatGPT response - 30s elapsed; no thinking status detected yet.",
+      "[browser] Waiting for ChatGPT response - 30s elapsed; no Pro Extended progress indicator detected yet.",
     );
   });
 
@@ -322,7 +324,7 @@ describe("formatThinkingLog", () => {
     } as unknown as ChromeClient["Runtime"];
 
     await expect(readThinkingStatusForTest(runtime)).resolves.toEqual({
-      message: "thinking sidecar active",
+      message: "reasoning sidecar active",
       source: "sidecar",
       progressPercent: 42.4,
       panelOpened: false,
@@ -356,6 +358,35 @@ describe("formatThinkingLog", () => {
 
     await vi.advanceTimersByTimeAsync(1000);
     expect(logger).not.toHaveBeenCalled();
+
+    stop();
+  });
+
+  test("logs visible ChatGPT errors instead of a response-progress heartbeat", async () => {
+    vi.useFakeTimers();
+    const logger = vi.fn();
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            message: "Something went wrong. Please try again.",
+            source: "assistant-turn",
+            retryAvailable: true,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    const stop = startThinkingStatusMonitorForTest(runtime, logger, {
+      intervalMs: 1000,
+      now: () => 1000,
+    });
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(logger).toHaveBeenCalledWith(
+      "[browser] ChatGPT visible error - Something went wrong. Please try again.; source=assistant-turn; retry available",
+    );
+    expect(logger).not.toHaveBeenCalledWith(expect.stringContaining("ChatGPT response progress"));
 
     stop();
   });
@@ -439,7 +470,7 @@ describe("thinking status browser expression", () => {
     expect(oldClicked).toBe(false);
     expect(latestClicked).toBe(true);
     expect(result).toMatchObject({
-      message: "thinking sidecar opened",
+      message: "reasoning sidecar opened",
       source: "sidecar",
       progressPercent: 42,
       panelOpened: true,
@@ -464,7 +495,7 @@ describe("thinking status browser expression", () => {
 
     expect(clicked).toBe(false);
     expect(result).toMatchObject({
-      message: "thinking sidecar active",
+      message: "reasoning sidecar active",
       source: "sidecar",
       progressPercent: 64,
       panelOpened: false,

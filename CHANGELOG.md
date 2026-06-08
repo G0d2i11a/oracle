@@ -30,6 +30,8 @@
 
 ### Fixed
 
+- Browser: surface ChatGPT reasoning/Thought UI evidence in live tab and harvest status, and flag completed Pro/Thinking tabs with no visible reasoning UI as downgrade-suspect evidence.
+- Browser: reconcile stale `running` browser sessions by inspecting the matched ChatGPT tab before preserving them, and clarify that unrelated live browser sessions do not block new Oracle runs.
 - Browser: treat visible ChatGPT Stop/Pause controls as the highest-priority active-run signal across assistant capture, Deep Research, live-tab status, and stale-session cleanup, including localized labels such as `停止` and `暂停`.
 - Browser/MCP: harden ChatGPT Pro browser consults with louder GPT-5.5 Pro selection validation, resolved MCP dry-run details, assistant-timeout diagnostics, incomplete-capture reattach metadata, and clean Pro Extended live-run metadata. (#177) — thanks @pdurlej.
 - Browser: detect Cloudflare/manual-verification interruptions during model selection, stop retry-clicking when the picker never opens, and accept ChatGPT's current `Extended Pro` label for GPT-5.5 Pro browser runs.

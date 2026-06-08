@@ -59,6 +59,17 @@ describe("registerTerminationHooks", () => {
   });
 });
 
+describe("isMacOsWindowHideAllowed", () => {
+  test("requires an explicit environment opt-in before System Events automation", async () => {
+    const { isMacOsWindowHideAllowed } = await import("../../src/browser/chromeLifecycle.js");
+
+    expect(isMacOsWindowHideAllowed({})).toBe(false);
+    expect(isMacOsWindowHideAllowed({ ORACLE_BROWSER_ALLOW_MACOS_WINDOW_HIDE: "0" })).toBe(false);
+    expect(isMacOsWindowHideAllowed({ ORACLE_BROWSER_ALLOW_MACOS_WINDOW_HIDE: "true" })).toBe(true);
+    expect(isMacOsWindowHideAllowed({ ORACLE_BROWSER_ALLOW_MACOS_WINDOW_HIDE: "1" })).toBe(true);
+  });
+});
+
 describe("connectWithNewTab", () => {
   beforeEach(() => {
     cdpMock.mockReset();

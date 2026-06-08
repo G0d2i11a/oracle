@@ -7,6 +7,14 @@ import path from "node:path";
 import os from "node:os";
 import { setOracleHomeDirOverrideForTest } from "../src/oracleHome.js";
 
+const liveTabsMock = vi.hoisted(() => ({
+  inspectChatGptTab: vi.fn(),
+}));
+
+vi.mock("../src/browser/liveTabs.js", () => ({
+  inspectChatGptTab: liveTabsMock.inspectChatGptTab,
+}));
+
 type SessionModule = typeof import("../src/sessionManager.ts");
 type SessionMetadata = Awaited<ReturnType<SessionModule["initializeSession"]>>;
 
@@ -21,6 +29,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  liveTabsMock.inspectChatGptTab.mockReset();
   await rm(sessionModule.getSessionsDir(), { recursive: true, force: true });
   await sessionModule.ensureSessionStorage();
 });
@@ -260,6 +269,248 @@ describe("session lifecycle", () => {
     const refreshed = await sessionModule.readSessionMetadata(meta.id);
     await new Promise<void>((resolve) => server.close(() => resolve()));
     expect(refreshed?.status).toBe("running");
+  });
+
+  test("keeps stale browser sessions running when the matched ChatGPT tab is still active", async () => {
+    const server = createHttpServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify([
+          {
+            id: "expected-target",
+            type: "page",
+            title: "Active run",
+            url: "https://chatgpt.com/c/expected",
+          },
+        ]),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    liveTabsMock.inspectChatGptTab.mockResolvedValue({
+      targetId: "expected-target",
+      url: "https://chatgpt.com/c/expected",
+      conversationId: "expected",
+      state: "running",
+      stopExists: true,
+      thinkingActive: true,
+      completionVisible: false,
+      sendExists: false,
+      assistantCount: 1,
+    });
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Browser still active", model: "gpt-5.2-pro", mode: "browser" },
+      "/tmp/cwd",
+    );
+    const staleStarted = new Date(
+      Date.now() - sessionModule.ZOMBIE_MAX_AGE_MS - 60_000,
+    ).toISOString();
+    await sessionModule.updateSessionMetadata(meta.id, {
+      status: "running",
+      startedAt: staleStarted,
+      mode: "browser",
+      browser: {
+        runtime: {
+          chromePid: process.pid,
+          chromePort: port,
+          chromeHost: "127.0.0.1",
+          chromeTargetId: "expected-target",
+          tabUrl: "https://chatgpt.com/c/expected",
+          conversationId: "expected",
+        },
+      },
+    });
+    const listed = await sessionModule.listSessionsMetadata();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const refreshed = listed.find((entry) => entry.id === meta.id);
+    expect(refreshed?.status).toBe("running");
+    expect(liveTabsMock.inspectChatGptTab).toHaveBeenCalled();
+  });
+
+  test("marks stale browser sessions completed when the matched ChatGPT tab is no longer active", async () => {
+    const server = createHttpServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify([
+          {
+            id: "expected-target",
+            type: "page",
+            title: "Completed run",
+            url: "https://chatgpt.com/c/expected",
+          },
+        ]),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    liveTabsMock.inspectChatGptTab.mockResolvedValue({
+      targetId: "expected-target",
+      url: "https://chatgpt.com/c/expected",
+      conversationId: "expected",
+      state: "completed",
+      stopExists: false,
+      thinkingActive: false,
+      completionVisible: true,
+      sendExists: true,
+      assistantCount: 2,
+      currentModelLabel: "Pro",
+      openingLine: "Opening",
+      lastAssistantSnippet: "Finished answer",
+    });
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Browser completed", model: "gpt-5.2-pro", mode: "browser" },
+      "/tmp/cwd",
+    );
+    const staleStarted = new Date(
+      Date.now() - sessionModule.ZOMBIE_MAX_AGE_MS - 60_000,
+    ).toISOString();
+    await sessionModule.updateSessionMetadata(meta.id, {
+      status: "running",
+      startedAt: staleStarted,
+      mode: "browser",
+      browser: {
+        runtime: {
+          chromePid: process.pid,
+          chromePort: port,
+          chromeHost: "127.0.0.1",
+          chromeTargetId: "expected-target",
+          tabUrl: "https://chatgpt.com/c/expected",
+          conversationId: "expected",
+        },
+      },
+    });
+    const listed = await sessionModule.listSessionsMetadata();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const refreshed = listed.find((entry) => entry.id === meta.id);
+    expect(refreshed?.status).toBe("completed");
+    expect(refreshed?.response?.status).toBe("completed");
+    expect(refreshed?.browser?.harvest).toMatchObject({
+      targetId: "expected-target",
+      state: "completed",
+      stopExists: false,
+      lastAssistantSnippet: "Finished answer",
+    });
+    const persisted = await sessionModule.readSessionMetadata(meta.id);
+    expect(persisted?.status).toBe("completed");
+  });
+
+  test("marks stale browser sessions errored when the matched ChatGPT tab is inactive but not complete", async () => {
+    const server = createHttpServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify([
+          {
+            id: "expected-target",
+            type: "page",
+            title: "Detached run",
+            url: "https://chatgpt.com/c/expected",
+          },
+        ]),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    liveTabsMock.inspectChatGptTab.mockResolvedValue({
+      targetId: "expected-target",
+      url: "https://chatgpt.com/c/expected",
+      conversationId: "expected",
+      state: "detached",
+      stopExists: false,
+      thinkingActive: false,
+      completionVisible: false,
+      sendExists: false,
+      assistantCount: 0,
+    });
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Browser detached", model: "gpt-5.2-pro", mode: "browser" },
+      "/tmp/cwd",
+    );
+    const staleStarted = new Date(
+      Date.now() - sessionModule.ZOMBIE_MAX_AGE_MS - 60_000,
+    ).toISOString();
+    await sessionModule.updateSessionMetadata(meta.id, {
+      status: "running",
+      startedAt: staleStarted,
+      mode: "browser",
+      browser: {
+        runtime: {
+          chromePid: process.pid,
+          chromePort: port,
+          chromeHost: "127.0.0.1",
+          chromeTargetId: "expected-target",
+          tabUrl: "https://chatgpt.com/c/expected",
+          conversationId: "expected",
+        },
+      },
+    });
+    const listed = await sessionModule.listSessionsMetadata();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const refreshed = listed.find((entry) => entry.id === meta.id);
+    expect(refreshed?.status).toBe("error");
+    expect(refreshed?.errorMessage).toMatch(/browser-detached/);
+    expect(refreshed?.response?.incompleteReason).toBe("browser-detached");
+  });
+
+  test("marks stale browser sessions errored when the matched ChatGPT tab is an idle empty home", async () => {
+    const server = createHttpServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify([
+          {
+            id: "expected-target",
+            type: "page",
+            title: "ChatGPT",
+            url: "https://chatgpt.com/",
+          },
+        ]),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    liveTabsMock.inspectChatGptTab.mockResolvedValue({
+      targetId: "expected-target",
+      url: "https://chatgpt.com/",
+      conversationId: undefined,
+      state: "completed",
+      stopExists: false,
+      thinkingActive: true,
+      completionVisible: false,
+      sendExists: false,
+      assistantCount: 0,
+      currentModelLabel: "Pro",
+      firstAssistantSnippet: "",
+      openingLine: "",
+      lastAssistantSnippet: "",
+      lastUserSnippet: "",
+    });
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Browser empty home", model: "gpt-5.2-pro", mode: "browser" },
+      "/tmp/cwd",
+    );
+    const staleStarted = new Date(
+      Date.now() - sessionModule.ZOMBIE_MAX_AGE_MS - 60_000,
+    ).toISOString();
+    await sessionModule.updateSessionMetadata(meta.id, {
+      status: "running",
+      startedAt: staleStarted,
+      mode: "browser",
+      browser: {
+        runtime: {
+          chromePid: process.pid,
+          chromePort: port,
+          chromeHost: "127.0.0.1",
+          chromeTargetId: "expected-target",
+          tabUrl: "https://chatgpt.com/",
+          conversationId: undefined,
+        },
+      },
+    });
+    const listed = await sessionModule.listSessionsMetadata();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const refreshed = listed.find((entry) => entry.id === meta.id);
+    expect(refreshed?.status).toBe("error");
+    expect(refreshed?.errorMessage).toMatch(/browser-empty/);
+    expect(refreshed?.response?.incompleteReason).toBe("browser-empty");
   });
 
   test("marks running browser sessions as error when the ChatGPT tab is gone", async () => {

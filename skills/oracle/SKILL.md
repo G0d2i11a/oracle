@@ -7,16 +7,18 @@ description: Use Shawn's local workshop Oracle CLI/MCP under /Users/shawn/Worksp
 
 Oracle bundles your prompt + selected files into one “one-shot” request so another model can answer with real repo context (API or browser automation). Treat outputs as advisory: verify against the codebase + tests.
 
-## Main use case (browser, GPT-5.5 Extended Pro)
+## Main use case (browser, GPT-5.5 Pro Extended)
 
-Default workflow here: `--engine browser` with ChatGPT's GPT-5.5 Extended Pro label. This is the “human in the loop” path: it can take ~10 minutes to multiple hours; long-running/finalizing/thinking is normal.
+Default workflow here: `--engine browser` with ChatGPT's GPT-5.5 Pro Extended target. The picker may render this as `5.5 Extended Pro`; in Shawn's workflow report it as `GPT-5.5 Pro Extended` / `Pro Extended`. This is the “human in the loop” path: it can take ~10 minutes to multiple hours; long-running/finalizing/Pro Extended progress UI is normal.
 
 Recommended defaults:
 
 - Engine: browser (`--engine browser`)
-- Model: ChatGPT picker label `--model "5.5 Extended Pro"` or the exact current web label reported by Oracle.
+- Model: `--model gpt-5.5-pro` resolving to ChatGPT Pro Extended.
+- Pro Extended selector: pass `--browser-thinking-time extended`. The flag name is historical; it selects Pro Extended and must not be changed to `heavy` unless Shawn explicitly asks for Thinking Heavy. In user-facing status, call this `Pro Extended`, not `thinking`, `thinkingTime`, or `Thought for ...`.
 - Model selection: use `--browser-model-strategy select`; verify the live browser label, not metadata alone.
 - Attachments: prefer `--browser-attachments always`; bundling text files is allowed only when it preserves the complete content.
+- Evidence gate: if the run resolves to Thinking Heavy, `--browser-thinking-time heavy`, base GPT-5.5, Instant, Auto, or any non-Pro Extended label, mark it tainted and rerun the same full prompt/context on GPT-5.5 Pro Extended. If the artifact only says `configured`, `desiredModel`, `meta.json`, or "live picker proof was not re-run", that is also not valid proof. `Thought for ...` is only progress/completion UI after Pro Extended has been verified; it is not model proof.
 
 ## Full-detail rule
 
@@ -26,7 +28,7 @@ Full-detail is the default in Shawn's workflow.
 - If upload, model selection, Cloudflare, composer, or status detection fails, fix or retry the browser automation while preserving the same full prompt and references.
 - Do not infer a hard attachment/context size limit from one failed browser run. Treat large-upload failures as automation/network/status problems unless a controlled upload-size test proves a threshold.
 - If ChatGPT shows a Stop button, treat that as authoritative evidence that the run is still active. Keep waiting while the Stop button remains visible; do not stop the run, declare it timed out, or start a smaller replacement run.
-- Finalizing answer, thinking, reasoning, iframe progress, or a thinking sidecar are also active-progress signals. Use them as additional evidence, but the Stop button alone is enough to keep waiting.
+- Finalizing answer, Pro Extended progress UI, iframe progress, or a sidecar progress indicator are also active-progress signals. Use them as additional evidence, but the Stop button alone is enough to keep waiting.
 - If the CLI detaches or loses capture while the browser remains open, reattach to the stored session rather than sending a duplicate.
 
 ## Golden path
@@ -44,7 +46,7 @@ Full-detail is the default in Shawn's workflow.
   - `npx -y @steipete/oracle --dry-run summary --files-report -p "<task>" --file "src/**"`
 
 - Browser run (main path; long-running is normal):
-  - `node /Users/shawn/Workspace/oracle/dist/bin/oracle-cli.js --engine browser --browser-attachments always --browser-model-strategy select --model "5.5 Extended Pro" -p "<task>" --file "src/**"`
+  - `node /Users/shawn/Workspace/oracle/dist/bin/oracle-cli.js --engine browser --browser-attachments always --browser-model-strategy select --model gpt-5.5-pro --browser-thinking-time extended -p "<task>" --file "src/**"`
 
 - Manual paste fallback (assemble bundle, copy to clipboard):
   - `npx -y @steipete/oracle --render --copy -p "<task>" --file "src/**"`
