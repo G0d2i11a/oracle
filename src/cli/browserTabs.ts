@@ -14,6 +14,7 @@ import {
   sessionMatchesTab,
   type ChatGptTabSummary,
 } from "../browser/liveTabs.js";
+import { hasHardVisibleChatGptErrorText } from "../browser/actions/chatgptErrors.js";
 import { resolveOutputPath } from "./writeOutputPath.js";
 
 const LIVE_POLL_MS = 2000;
@@ -293,9 +294,13 @@ function formatTabEvidence(
     | "lastAssistantSnippet"
     | "reasoningUiState"
     | "reasoningDowngradeSuspected"
+    | "error"
   >,
 ): string | null {
   const evidence: string[] = [];
+  if (tab.error) {
+    evidence.push("visible-chatgpt-error");
+  }
   if (isUnsavedRootConversationTab(tab)) {
     evidence.push("root-url");
   }
@@ -614,6 +619,7 @@ function buildHarvestBrowserMetadata(
       openingLine: harvested.openingLine,
       lastAssistantSnippet: harvested.lastAssistantSnippet,
       lastUserSnippet: harvested.lastUserSnippet,
+      error: harvested.error,
     },
   };
 }
@@ -658,6 +664,9 @@ function formatHarvestSummaryLines(
   const lastAssistantSnippet = chooseAssistantSnippet(harvested.lastAssistantSnippet);
   if (lastAssistantSnippet) {
     lines.push(`Last assistant: ${lastAssistantSnippet}`);
+  }
+  if (harvested.error) {
+    lines.push(`Error: ${snippet(harvested.error)}`);
   }
   if (harvested.lastUserSnippet) {
     lines.push(`Last user: ${snippet(harvested.lastUserSnippet)}`);
@@ -733,6 +742,9 @@ function formatBrowserTabStatusLines(
   );
   if (lastAssistantSnippet) {
     lines.push(`  last=${lastAssistantSnippet}`);
+  }
+  if (tab.error || harvest?.error) {
+    lines.push(`  error=${snippet(tab.error || harvest?.error || "")}`);
   }
   const showActivityDetails = isBrowserTabActive(tab) || isUnsavedRootConversationTab(tab);
   const lastUserSnippet = chooseAssistantSnippet(tab.lastUserSnippet, harvest?.lastUserSnippet);
@@ -812,12 +824,40 @@ async function maybeWriteHarvestOutput(
     console.log(chalk.dim("write-output skipped: harvested assistant output appears incomplete."));
     return;
   }
+  if (isVisibleChatGptErrorOutput(payload)) {
+    console.log(chalk.dim("write-output skipped: harvested assistant output is a ChatGPT error."));
+    return;
+  }
   if (resolved === "-" || resolved === "/dev/stdout") {
     process.stdout.write(`${payload}${payload.endsWith("\n") ? "" : "\n"}`);
     return;
   }
   await fs.writeFile(resolved, payload, "utf8");
   console.log(chalk.dim(`Wrote harvested assistant output to ${resolved}`));
+}
+
+function isVisibleChatGptErrorOutput(content: string): boolean {
+  return hasHardVisibleChatGptErrorText(content);
+}
+
+function isDowngradeSuspectHarvest(harvested: ChatGptTabSummary): boolean {
+  return harvested.reasoningDowngradeSuspected === true;
+}
+
+function outputForHarvest(harvested: ChatGptTabSummary): string {
+  const output = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "";
+  if (
+    harvested.blocker === "chatgpt-visible-error" ||
+    isVisibleChatGptErrorOutput(output) ||
+    isDowngradeSuspectHarvest(harvested)
+  ) {
+    return "";
+  }
+  return output;
+}
+
+export function outputForHarvestForTest(harvested: ChatGptTabSummary): string {
+  return outputForHarvest(harvested);
 }
 
 export async function showBrowserTabsStatus(): Promise<void> {
@@ -872,7 +912,7 @@ export async function harvestSessionBrowserOutput(
   });
   await persistHarvest(sessionId, meta, harvested);
   printHarvestSummary(sessionId, harvested, resolveBrowserOwner(meta));
-  const output = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "";
+  const output = outputForHarvest(harvested);
   if (options.writeOutputPath) {
     await maybeWriteHarvestOutput(options.writeOutputPath, meta.cwd ?? process.cwd(), output);
   }
@@ -941,7 +981,7 @@ export async function liveTailSessionBrowserOutput(
       };
       await persistHarvest(sessionId, meta, finalHarvest);
       printHarvestSummary(sessionId, finalHarvest, resolveBrowserOwner(meta));
-      const output = finalHarvest.lastAssistantMarkdown ?? finalHarvest.lastAssistantText ?? "";
+      const output = outputForHarvest(finalHarvest);
       if (options.writeOutputPath) {
         await maybeWriteHarvestOutput(options.writeOutputPath, meta.cwd ?? process.cwd(), output, {
           allowLowSignal: derivedState === "completed",

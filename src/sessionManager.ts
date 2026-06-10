@@ -127,6 +127,7 @@ export interface BrowserHarvestMetadata {
   openingLine?: string;
   lastAssistantSnippet?: string;
   lastUserSnippet?: string;
+  error?: string;
 }
 
 export interface BrowserMetadata {

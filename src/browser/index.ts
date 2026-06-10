@@ -29,6 +29,7 @@ import {
   ensureNotBlocked,
   ensureLoggedIn,
   ensurePromptReady,
+  ensureNoChatGptSubscriptionIssue,
   installJavaScriptDialogAutoDismissal,
   ensureModelSelection,
   clearPromptComposer,
@@ -44,6 +45,7 @@ import {
   ASSISTANT_ROLE_SELECTOR,
   FINISHED_ACTIONS_SELECTOR,
   INPUT_SELECTORS,
+  MODEL_BUTTON_SELECTOR,
 } from "./constants.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
 import { buildVisibleStopButtonFunction } from "./actions/stopButton.js";
@@ -137,7 +139,10 @@ function isReattachableCaptureError(error: unknown): error is BrowserAutomationE
   if (!(error instanceof BrowserAutomationError)) return false;
   const stage = (error.details as { stage?: string } | undefined)?.stage;
   return (
-    stage === "assistant-timeout" || stage === "assistant-recheck" || stage === "assistant-response"
+    stage === "assistant-timeout" ||
+    stage === "assistant-recheck" ||
+    stage === "assistant-response" ||
+    stage === "chatgpt-pro-extended-evidence-missing"
   );
 }
 
@@ -213,6 +218,46 @@ export function shouldSkipThinkingTimeSelectionForTest(
   thinkingTime: ResolvedBrowserConfig["thinkingTime"],
 ): boolean {
   return shouldSkipThinkingTimeSelection(desiredModel, thinkingTime);
+}
+
+function isGpt55ProExtendedModelLabel(desiredModel: string | null | undefined): boolean {
+  if (!desiredModel) {
+    return false;
+  }
+  const normalized = desiredModel.toLowerCase().replace(/\s+/g, " ").trim();
+  return (
+    normalized === "gpt-5.5-pro" ||
+    normalized.includes("gpt-5.5 pro") ||
+    normalized.includes("gpt 5.5 pro") ||
+    normalized.includes("gpt 5 5 pro") ||
+    (normalized.includes("5.5") && normalized.includes("pro") && normalized.includes("extended")) ||
+    (normalized.includes("pro") && normalized.includes("extended")) ||
+    normalized.includes("进阶")
+  );
+}
+
+function shouldRequireProExtendedEvidence(config: {
+  desiredModel?: string | null;
+  thinkingTime?: ResolvedBrowserConfig["thinkingTime"];
+  modelStrategy?: ResolvedBrowserConfig["modelStrategy"];
+  researchMode?: ResolvedBrowserConfig["researchMode"];
+}): boolean {
+  if (config.researchMode === "deep" || config.modelStrategy === "ignore") {
+    return false;
+  }
+  if (isGpt55ProExtendedModelLabel(config.desiredModel)) {
+    return true;
+  }
+  return config.thinkingTime === "extended" && /\bpro\b/i.test(config.desiredModel ?? "");
+}
+
+export function shouldRequireProExtendedEvidenceForTest(config: {
+  desiredModel?: string | null;
+  thinkingTime?: ResolvedBrowserConfig["thinkingTime"];
+  modelStrategy?: ResolvedBrowserConfig["modelStrategy"];
+  researchMode?: ResolvedBrowserConfig["researchMode"];
+}): boolean {
+  return shouldRequireProExtendedEvidence(config);
 }
 
 function listIgnoredRemoteChromeFlags(config: {
@@ -629,6 +674,8 @@ interface BrowserAnswerFinalizationInput {
   thinkingActive?: boolean;
   completionUiVisible?: boolean;
   completionUiScopedToMessage?: boolean;
+  requireProExtendedEvidence?: boolean;
+  proExtendedEvidence?: BrowserProExtendedEvidence | null;
 }
 
 interface BrowserAnswerFinalizationVerdict {
@@ -637,6 +684,15 @@ interface BrowserAnswerFinalizationVerdict {
   answerChars: number;
   answerTokens: number;
   promptEstimatedTokens: number;
+}
+
+type BrowserProExtendedEvidenceState = "active" | "complete" | "missing" | "unknown";
+
+interface BrowserProExtendedEvidence {
+  state: BrowserProExtendedEvidenceState;
+  text: string;
+  evidence: string[];
+  currentModelLabel?: string;
 }
 
 function validateBrowserAnswerFinalization(
@@ -658,6 +714,12 @@ function validateBrowserAnswerFinalization(
   }
   if (input.completionUiVisible && !input.completionUiScopedToMessage) {
     reasons.push("completion-ui-not-scoped-to-candidate");
+  }
+  if (input.requireProExtendedEvidence) {
+    const reasoning = input.proExtendedEvidence;
+    if (!reasoning || reasoning.state !== "complete" || reasoning.evidence.length === 0) {
+      reasons.push("pro-extended-evidence-missing");
+    }
   }
   if (answerChars === 0) {
     reasons.push("empty-answer");
@@ -760,12 +822,220 @@ async function readBrowserCompletionUiSignals(
   }
 }
 
+function normalizeProExtendedEvidenceState(value: unknown): BrowserProExtendedEvidenceState {
+  return value === "active" || value === "complete" || value === "missing" || value === "unknown"
+    ? value
+    : "unknown";
+}
+
+async function readBrowserProExtendedEvidence(
+  Runtime: ChromeClient["Runtime"],
+): Promise<BrowserProExtendedEvidence> {
+  try {
+    const { result } = await Runtime.evaluate({
+      expression: `(() => {
+        const TURN_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
+        const ASSISTANT_SELECTOR = ${JSON.stringify(ASSISTANT_ROLE_SELECTOR)};
+        const FINISHED_SELECTOR = ${JSON.stringify(FINISHED_ACTIONS_SELECTOR)};
+        const MODEL_BUTTON_SELECTOR = ${JSON.stringify(MODEL_BUTTON_SELECTOR)};
+        const normalize = (value) =>
+          String(value || '').replace(/\\s+/g, ' ').trim();
+        const normalizeLower = (value) =>
+          normalize(value)
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .toLowerCase();
+        const truncate = (value) => {
+          const text = normalize(value);
+          return text.length > 120 ? text.slice(0, 119).trimEnd() + '…' : text;
+        };
+        const isVisible = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const rect = node.getBoundingClientRect();
+          if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+          const style = getComputedStyle(node);
+          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+        };
+        const labelFor = (node) =>
+          [
+            node?.textContent,
+            node?.getAttribute?.('aria-label'),
+            node?.getAttribute?.('title'),
+            node?.getAttribute?.('data-testid'),
+          ].filter(Boolean).join(' ');
+        const isAssistantTurn = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const role = String(node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || '').toLowerCase();
+          if (role === 'assistant') return true;
+          const testId = String(node.getAttribute('data-testid') || '').toLowerCase();
+          if (testId.includes('assistant')) return true;
+          return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+        };
+        const turns = Array.from(document.querySelectorAll(TURN_SELECTOR));
+        let lastAssistantTurn = null;
+        for (let i = turns.length - 1; i >= 0; i -= 1) {
+          if (isAssistantTurn(turns[i])) {
+            lastAssistantTurn = turns[i];
+            break;
+          }
+        }
+        const isCompletionActionNearAssistantTurn = (button, turn) => {
+          if (!(button instanceof HTMLElement) || !(turn instanceof HTMLElement)) return false;
+          if (!isVisible(button)) return false;
+          if (button.closest('nav, aside, form, [data-testid*="sidebar"], [data-testid*="composer"]')) {
+            return false;
+          }
+          if (turn.contains(button)) return true;
+          const turnRoot = turn.closest('article[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"]');
+          if (turnRoot?.contains(button)) return true;
+          const messageRoot = turn.closest('[data-message-id], [data-testid^="conversation-turn"]');
+          if (messageRoot?.contains(button)) return true;
+          const relation = turn.compareDocumentPosition(button);
+          if ((relation & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return false;
+          const turnRect = turn.getBoundingClientRect();
+          const actionRect = button.getBoundingClientRect();
+          if (!turnRect || !actionRect) return false;
+          return actionRect.top >= turnRect.top - 24 && actionRect.top <= turnRect.bottom + 260;
+        };
+        const completionVisible = Boolean(
+          lastAssistantTurn &&
+            Array.from(document.querySelectorAll(FINISHED_SELECTOR)).some((button) =>
+              isCompletionActionNearAssistantTurn(button, lastAssistantTurn),
+            ),
+        );
+        const durationPattern = /\\b(?:thought|reasoned|reasoning|thinking)\\s+(?:for|about)\\s+(?:a few|several|\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)(?:\\s+\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds))?)\\b|\\b(?:思考|推理)(?:了|用时|耗时)?\\s*\\d+(?:\\.\\d+)?\\s*(?:秒|分钟|小时|s|min|h)\\b/i;
+        const completedControlPattern = /\\b(thoughts?|reasoning|reasoned)\\b|思考|推理/i;
+        const activePattern = /\\b(pro thinking|thinking|reasoning|finalizing answer|finalising answer)\\b|正在思考|思考中|推理中/i;
+        const selector = [
+          '[data-testid*="thinking"]',
+          '[data-testid*="reasoning"]',
+          '[aria-label*="Thought"]',
+          '[aria-label*="thought"]',
+          '[aria-label*="Reason"]',
+          '[aria-label*="reason"]',
+          '[aria-label*="思考"]',
+          '[aria-label*="推理"]',
+          'button',
+          '[role="button"]',
+          'summary',
+          'details',
+        ].join(',');
+        const evidenceContainers = [];
+        const addEvidenceContainer = (node) => {
+          if (node instanceof Element && !evidenceContainers.includes(node)) {
+            evidenceContainers.push(node);
+          }
+        };
+        if (lastAssistantTurn instanceof Element) {
+          addEvidenceContainer(
+            lastAssistantTurn.closest(
+              'article[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"]',
+            ),
+          );
+          addEvidenceContainer(lastAssistantTurn.closest('[data-message-id], [data-testid^="conversation-turn"]'));
+          addEvidenceContainer(lastAssistantTurn);
+        }
+        const seen = new Set();
+        for (const root of evidenceContainers) {
+          const nodes = [
+            root.matches?.(selector) ? root : null,
+            ...Array.from(root.querySelectorAll(selector)),
+          ].filter(Boolean);
+          for (const node of nodes) {
+            if (!(node instanceof Element) || seen.has(node) || !isVisible(node)) continue;
+            seen.add(node);
+            const label = labelFor(node);
+            const normalizedLabel = normalize(label);
+            if (!normalizedLabel || normalizedLabel.length > 240) continue;
+            const testId = normalizeLower(node.getAttribute?.('data-testid'));
+            if (durationPattern.test(normalizedLabel)) {
+              return {
+                state: 'complete',
+                text: truncate(normalizedLabel),
+                evidence: ['reasoning-duration'],
+                currentModelLabel: normalize(document.querySelector(MODEL_BUTTON_SELECTOR)?.textContent || ''),
+              };
+            }
+            if (
+              completionVisible &&
+              (testId.includes('thinking') ||
+                testId.includes('reasoning') ||
+                completedControlPattern.test(normalizedLabel))
+            ) {
+              return {
+                state: 'complete',
+                text: truncate(normalizedLabel),
+                evidence: ['reasoning-control'],
+                currentModelLabel: normalize(document.querySelector(MODEL_BUTTON_SELECTOR)?.textContent || ''),
+              };
+            }
+          }
+        }
+        if (!completionVisible) {
+          const activeNodes = Array.from(document.querySelectorAll(selector));
+          for (const node of activeNodes) {
+            if (!(node instanceof Element) || seen.has(node) || !isVisible(node)) continue;
+            seen.add(node);
+            const label = labelFor(node);
+            const normalizedLabel = normalize(label);
+            if (!normalizedLabel || normalizedLabel.length > 240) continue;
+            if (activePattern.test(normalizedLabel)) {
+              return {
+                state: 'active',
+                text: truncate(normalizedLabel),
+                evidence: ['reasoning-active'],
+                currentModelLabel: normalize(document.querySelector(MODEL_BUTTON_SELECTOR)?.textContent || ''),
+              };
+            }
+          }
+        }
+        return {
+          state: completionVisible ? 'missing' : 'unknown',
+          text: '',
+          evidence: [],
+          currentModelLabel: normalize(document.querySelector(MODEL_BUTTON_SELECTOR)?.textContent || ''),
+        };
+      })()`,
+      returnByValue: true,
+    });
+    const value = result?.value as
+      | {
+          state?: unknown;
+          text?: unknown;
+          evidence?: unknown;
+          currentModelLabel?: unknown;
+        }
+      | undefined;
+    const evidence = Array.isArray(value?.evidence)
+      ? value.evidence
+          .map((entry) => String(entry ?? "").trim())
+          .filter(Boolean)
+          .slice(0, 8)
+      : [];
+    return {
+      state: normalizeProExtendedEvidenceState(value?.state),
+      text: String(value?.text ?? "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120),
+      evidence,
+      currentModelLabel: String(value?.currentModelLabel ?? "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120),
+    };
+  } catch {
+    return { state: "unknown", text: "", evidence: [] };
+  }
+}
+
 async function assertBrowserAnswerFinalized({
   Runtime,
   prompt,
   answerText,
   answerMarkdown,
   attachmentCount,
+  requireProExtendedEvidence,
   logger,
 }: {
   Runtime: ChromeClient["Runtime"];
@@ -773,11 +1043,13 @@ async function assertBrowserAnswerFinalized({
   answerText: string;
   answerMarkdown: string;
   attachmentCount: number;
+  requireProExtendedEvidence: boolean;
   logger: BrowserLogger;
 }): Promise<BrowserAnswerFinalizationVerdict> {
-  const [activity, completionUi] = await Promise.all([
+  const [activity, completionUi, proExtendedEvidence] = await Promise.all([
     readBrowserAssistantActivity(Runtime),
     readBrowserCompletionUiSignals(Runtime),
+    requireProExtendedEvidence ? readBrowserProExtendedEvidence(Runtime) : Promise.resolve(null),
   ]);
   const verdict = validateBrowserAnswerFinalization({
     prompt,
@@ -788,23 +1060,41 @@ async function assertBrowserAnswerFinalized({
     thinkingActive: activity.thinkingActive,
     completionUiVisible: completionUi.completionUiVisible,
     completionUiScopedToMessage: completionUi.completionUiScopedToMessage,
+    requireProExtendedEvidence,
+    proExtendedEvidence,
   });
   if (!verdict.accepted) {
     logger(`[browser] Assistant completion rejected: ${verdict.reasons.join(", ")}`);
+    const proExtendedEvidenceMissing = verdict.reasons.includes("pro-extended-evidence-missing");
     throw new BrowserAutomationError(
-      "Assistant response did not pass browser completion finalization.",
+      proExtendedEvidenceMissing
+        ? "ChatGPT Pro Extended completion evidence was not visible on the final assistant turn."
+        : "Assistant response did not pass browser completion finalization.",
       {
-        stage: "assistant-response",
-        reason: "completion-not-accepted",
+        stage: proExtendedEvidenceMissing
+          ? "chatgpt-pro-extended-evidence-missing"
+          : "assistant-response",
+        reason: proExtendedEvidenceMissing
+          ? "pro-extended-evidence-missing"
+          : "completion-not-accepted",
         reasons: verdict.reasons,
         active: activity.active,
         stopVisible: activity.stopVisible,
         thinkingActive: activity.thinkingActive,
+        proExtendedEvidence: proExtendedEvidence?.state,
+        proExtendedEvidenceText: proExtendedEvidence?.text,
+        proExtendedEvidenceSignals: proExtendedEvidence?.evidence,
+        currentModelLabel: proExtendedEvidence?.currentModelLabel,
         answerChars: verdict.answerChars,
         answerTokens: verdict.answerTokens,
         promptEstimatedTokens: verdict.promptEstimatedTokens,
       },
     );
+  }
+  if (requireProExtendedEvidence && proExtendedEvidence?.state === "complete") {
+    const evidence = proExtendedEvidence.evidence.join(", ") || "unknown";
+    const text = proExtendedEvidence.text ? ` (${proExtendedEvidence.text})` : "";
+    logger(`[browser] Pro Extended completion evidence detected${text}; evidence=${evidence}.`);
   }
   return verdict;
 }
@@ -1192,6 +1482,42 @@ function shouldRetryVisibleChatGptError(options: BrowserRunOptions): boolean {
   return !options.config?.browserTabRef;
 }
 
+async function clearChatGptSubscriptionIssueForRun({
+  Page,
+  Runtime,
+  logger,
+  inputTimeoutMs,
+  desiredModel,
+  modelStrategy,
+  reselectModel,
+}: {
+  Page: ChromeClient["Page"];
+  Runtime: ChromeClient["Runtime"];
+  logger: BrowserLogger;
+  inputTimeoutMs: number;
+  desiredModel?: string | null;
+  modelStrategy: ResolvedBrowserConfig["modelStrategy"];
+  reselectModel: boolean;
+}): Promise<number> {
+  const refreshes = await ensureNoChatGptSubscriptionIssue(Page, Runtime, logger);
+  if (refreshes <= 0) {
+    return 0;
+  }
+
+  await ensurePromptReady(Runtime, inputTimeoutMs, logger);
+  if (reselectModel && desiredModel && modelStrategy !== "ignore") {
+    logger("[browser] Re-selecting model after clearing ChatGPT subscription warning.");
+    await ensureModelSelection(
+      Runtime,
+      desiredModel,
+      logger,
+      modelStrategy ?? DEFAULT_MODEL_STRATEGY,
+    );
+    await ensurePromptReady(Runtime, inputTimeoutMs, logger);
+  }
+  return refreshes;
+}
+
 function isRootConversationStallError(error: unknown): error is BrowserAutomationError {
   if (!(error instanceof BrowserAutomationError)) {
     return false;
@@ -1576,6 +1902,18 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
         await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       }
     }
+    const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
+    await raceWithDisconnect(
+      clearChatGptSubscriptionIssueForRun({
+        Page,
+        Runtime,
+        logger,
+        inputTimeoutMs: config.inputTimeoutMs,
+        desiredModel: config.desiredModel,
+        modelStrategy,
+        reselectModel: false,
+      }),
+    );
     logger(
       `Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`,
     );
@@ -1653,7 +1991,6 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
         });
     };
     await captureRuntimeSnapshot();
-    const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
     if (config.desiredModel && modelStrategy !== "ignore") {
       await raceWithDisconnect(
         withRetries(
@@ -1713,6 +2050,17 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
         );
       }
     }
+    await raceWithDisconnect(
+      clearChatGptSubscriptionIssueForRun({
+        Page,
+        Runtime,
+        logger,
+        inputTimeoutMs: config.inputTimeoutMs,
+        desiredModel: config.desiredModel,
+        modelStrategy,
+        reselectModel: !deepResearch,
+      }),
+    );
     if (deepResearch) {
       await raceWithDisconnect(
         withRetries(() => activateDeepResearch(Runtime, Input, logger), {
@@ -2549,12 +2897,24 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
       logger,
     );
     const savedArtifacts = appendArtifacts(savedImageArtifacts, [transcriptArtifact]);
+    await raceWithDisconnect(
+      clearChatGptSubscriptionIssueForRun({
+        Page,
+        Runtime,
+        logger,
+        inputTimeoutMs: config.inputTimeoutMs,
+        desiredModel: config.desiredModel,
+        modelStrategy,
+        reselectModel: !deepResearch,
+      }),
+    );
     await assertBrowserAnswerFinalized({
       Runtime,
       prompt: promptText,
       answerText,
       answerMarkdown,
       attachmentCount: attachments.length,
+      requireProExtendedEvidence: shouldRequireProExtendedEvidence(config),
       logger,
     });
     const archive = await maybeArchiveCompletedConversation({
@@ -3218,6 +3578,16 @@ async function runRemoteBrowserMode(
       await ensureLoggedIn(Runtime, logger, { remoteSession: true });
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
     }
+    const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
+    await clearChatGptSubscriptionIssueForRun({
+      Page,
+      Runtime,
+      logger,
+      inputTimeoutMs: config.inputTimeoutMs,
+      desiredModel: config.desiredModel,
+      modelStrategy,
+      reselectModel: false,
+    });
     logger(
       `Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`,
     );
@@ -3234,7 +3604,6 @@ async function runRemoteBrowserMode(
       // ignore
     }
 
-    const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
     if (config.desiredModel && modelStrategy !== "ignore") {
       await withRetries(
         () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
@@ -3277,6 +3646,15 @@ async function runRemoteBrowserMode(
         });
       }
     }
+    await clearChatGptSubscriptionIssueForRun({
+      Page,
+      Runtime,
+      logger,
+      inputTimeoutMs: config.inputTimeoutMs,
+      desiredModel: config.desiredModel,
+      modelStrategy,
+      reselectModel: !deepResearch,
+    });
     if (deepResearch) {
       await withRetries(() => activateDeepResearch(Runtime, Input, logger), {
         retries: 2,
@@ -4044,12 +4422,22 @@ async function runRemoteBrowserMode(
       logger,
     );
     const savedArtifacts = appendArtifacts(savedImageArtifacts, [transcriptArtifact]);
+    await clearChatGptSubscriptionIssueForRun({
+      Page,
+      Runtime,
+      logger,
+      inputTimeoutMs: config.inputTimeoutMs,
+      desiredModel: config.desiredModel,
+      modelStrategy,
+      reselectModel: !deepResearch,
+    });
     await assertBrowserAnswerFinalized({
       Runtime,
       prompt: promptText,
       answerText,
       answerMarkdown,
       attachmentCount: attachments.length,
+      requireProExtendedEvidence: shouldRequireProExtendedEvidence(config),
       logger,
     });
     const archive = await maybeArchiveCompletedConversation({

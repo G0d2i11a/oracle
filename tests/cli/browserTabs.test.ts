@@ -7,6 +7,7 @@ import {
   formatBrowserSignalsForTest,
   formatLiveTailStatusLineForTest,
   isBrowserTabActiveForTest,
+  outputForHarvestForTest,
   resolveBrowserOwnerLabelForTest,
   resolveBrowserProfileLabelForTest,
   resolveBrowserRuntimeLabelForTest,
@@ -258,6 +259,16 @@ describe("browser tab CLI helpers", () => {
     expect(formatBrowserSignalsForTest(tab)).toBe(
       "active=no stop=no progress=no completeUi=yes send=yes reasoningUi=missing downgrade=suspect",
     );
+  });
+
+  test("does not harvest downgraded Pro Extended output", () => {
+    const tab = {
+      reasoningDowngradeSuspected: true,
+      lastAssistantText: "Selected Pro Extended",
+      lastAssistantMarkdown: "Selected Pro Extended",
+    } as ChatGptTabSummary;
+
+    expect(outputForHarvestForTest(tab)).toBe("");
   });
 
   test("does not print empty thinking-only ChatGPT home as active", () => {
@@ -583,6 +594,53 @@ describe("browser tab CLI helpers", () => {
       "  opening=Answer",
       "  last=Answer",
       "  reasoning=missing downgrade=suspect",
+    ]);
+  });
+
+  test("formats visible ChatGPT generation errors as blocked tabs", () => {
+    const errorText =
+      "Something went wrong while generating the response. If this issue persists please contact us through our help center at help.openai.com.";
+    const tab = {
+      targetId: "target-error",
+      title: "ChatGPT",
+      url: "https://chatgpt.com/",
+      currentModelLabel: "Extended Pro",
+      stopExists: false,
+      thinkingActive: false,
+      completionVisible: false,
+      sendExists: false,
+      promptReady: true,
+      loginButtonExists: false,
+      authenticated: false,
+      assistantCount: 1,
+      firstAssistantText: errorText,
+      firstAssistantSnippet: errorText,
+      openingLine: errorText,
+      lastAssistantText: errorText,
+      lastAssistantSnippet: errorText,
+      lastUserText: "attachments-bundle.txt Please review this.",
+      lastUserSnippet: "attachments-bundle.txt Please review this.",
+      focused: false,
+      visibilityState: "visible",
+      fingerprint: "fp",
+      state: "blocked",
+      blocker: "chatgpt-visible-error",
+      error: errorText,
+      lastAssistantMarkdown: errorText,
+    } as ChatGptTabSummary;
+    const snippedError =
+      "Something went wrong while generating the response. If this issue persists please contact us through our help center at…";
+
+    expect(formatBrowserTabStatusLinesForTest(tab, null)).toEqual([
+      "- target-error blocked active=no stop=no progress=no completeUi=no send=no blocker=chatgpt-visible-error model=Extended Pro turns=1",
+      "  title=ChatGPT",
+      "  url=https://chatgpt.com/",
+      "  conversation=(unsaved root tab)",
+      `  opening=${snippedError}`,
+      `  last=${snippedError}`,
+      `  error=${snippedError}`,
+      "  lastUser=attachments-bundle.txt Please review this.",
+      "  evidence=visible-chatgpt-error,root-url,assistant-turns=1,last-user-present,last-assistant-present",
     ]);
   });
 

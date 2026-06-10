@@ -2,6 +2,53 @@ import type { ChromeClient } from "../types.js";
 import { ASSISTANT_ROLE_SELECTOR, CONVERSATION_TURN_SELECTOR } from "../constants.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 
+const VISIBLE_CHATGPT_ERROR_PHRASES = [
+  "something went wrong",
+  "there was an error generating a response",
+  "error generating a response",
+  "an error occurred",
+  "encountered an error",
+  "network error",
+  "failed to generate",
+  "failed to get response",
+  "could not generate",
+  "couldn't generate",
+  "unable to generate",
+  "request timed out",
+  "message stream interrupted",
+  "unable to load conversation",
+  "conversation not found",
+  "we ran into an issue",
+  "please try again",
+  "出了点问题",
+  "出错了",
+  "发生错误",
+  "出现错误",
+  "生成回复时出错",
+  "网络错误",
+  "请求超时",
+  "请重试",
+];
+
+const HARD_VISIBLE_CHATGPT_ERROR_PHRASES = [
+  "something went wrong while generating the response",
+  "if this issue persists please contact us through our help center",
+  "unable to display this message due to an error",
+  "there was an error generating a response",
+  "message stream interrupted",
+  "failed to get response",
+  "生成回复时出错",
+];
+
+const VISIBLE_CHATGPT_RETRY_PHRASES = [
+  "retry",
+  "try again",
+  "regenerate",
+  "重试",
+  "再试一次",
+  "重新生成",
+];
+
 export interface ChatGptVisibleErrorSnapshot {
   message: string;
   source: "alert" | "toast" | "assistant-turn" | "page";
@@ -94,9 +141,41 @@ function sanitizeVisibleChatGptErrorMessage(raw: unknown): string {
   return raw.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
+function normalizeProbeText(raw: unknown): string {
+  return String(raw || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function hasHardVisibleChatGptErrorText(raw: unknown): boolean {
+  const text = normalizeProbeText(raw);
+  return Boolean(
+    text && HARD_VISIBLE_CHATGPT_ERROR_PHRASES.some((phrase) => text.includes(phrase)),
+  );
+}
+
+export function hasVisibleChatGptErrorText(raw: unknown): boolean {
+  const text = normalizeProbeText(raw);
+  if (!text) {
+    return false;
+  }
+  if (VISIBLE_CHATGPT_ERROR_PHRASES.some((phrase) => text.includes(phrase))) {
+    return true;
+  }
+  return (
+    /\berror\b/.test(text) && VISIBLE_CHATGPT_RETRY_PHRASES.some((phrase) => text.includes(phrase))
+  );
+}
+
 function buildVisibleChatGptErrorExpression(options: VisibleChatGptErrorOptions = {}): string {
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
+  const errorPhrasesLiteral = JSON.stringify(VISIBLE_CHATGPT_ERROR_PHRASES);
+  const hardErrorPhrasesLiteral = JSON.stringify(HARD_VISIBLE_CHATGPT_ERROR_PHRASES);
+  const retryPhrasesLiteral = JSON.stringify(VISIBLE_CHATGPT_RETRY_PHRASES);
   const minTurnLiteral =
     typeof options.minTurnIndex === "number" &&
     Number.isFinite(options.minTurnIndex) &&
@@ -146,35 +225,11 @@ function buildVisibleChatGptErrorExpression(options: VisibleChatGptErrorOptions 
     };
     const isComposerOrNavigation = (node) =>
       Boolean(node.closest?.('nav, form, [contenteditable="true"], textarea, [data-testid*="composer"], [id*="composer"], [data-testid*="chat-history"]'));
-    const errorPhrases = [
-      'something went wrong',
-      'there was an error generating a response',
-      'error generating a response',
-      'an error occurred',
-      'encountered an error',
-      'network error',
-      'failed to generate',
-      'failed to get response',
-      'could not generate',
-      "couldn't generate",
-      'unable to generate',
-      'request timed out',
-      'message stream interrupted',
-      'unable to load conversation',
-      'conversation not found',
-      'we ran into an issue',
-      'please try again',
-      '出了点问题',
-      '出错了',
-      '发生错误',
-      '出现错误',
-      '生成回复时出错',
-      '网络错误',
-      '请求超时',
-      '请重试'
-    ];
-    const retryPhrases = ['retry', 'try again', 'regenerate', '重试', '再试一次', '重新生成'];
+    const errorPhrases = ${errorPhrasesLiteral};
+    const hardErrorPhrases = ${hardErrorPhrasesLiteral};
+    const retryPhrases = ${retryPhrasesLiteral};
     const hasRetryPhrase = (text) => retryPhrases.some((phrase) => text.includes(phrase));
+    const hasHardErrorPhrase = (text) => Boolean(text) && hardErrorPhrases.some((phrase) => text.includes(phrase));
     const hasErrorPhrase = (text) => {
       if (!text) return false;
       if (errorPhrases.some((phrase) => text.includes(phrase))) return true;
@@ -238,8 +293,9 @@ function buildVisibleChatGptErrorExpression(options: VisibleChatGptErrorOptions 
       if (!isAssistantTurn(turn) || !isVisible(turn)) continue;
       const text = normalize(visibleText(turn));
       if (!hasErrorPhrase(text)) return null;
+      const hardError = hasHardErrorPhrase(text);
       const hasMarkdownContent = Boolean(turn.querySelector('.markdown, [data-message-content], .prose, pre, code'));
-      if (!hasRetryAction(turn) && hasMarkdownContent) return null;
+      if (!hardError && !hasRetryAction(turn) && hasMarkdownContent) return null;
       return snapshotFor(turn, 'assistant-turn');
     }
     return null;
@@ -248,3 +304,5 @@ function buildVisibleChatGptErrorExpression(options: VisibleChatGptErrorOptions 
 
 export const readVisibleChatGptErrorForTest = readVisibleChatGptError;
 export const buildVisibleChatGptErrorExpressionForTest = buildVisibleChatGptErrorExpression;
+export const hasHardVisibleChatGptErrorTextForTest = hasHardVisibleChatGptErrorText;
+export const hasVisibleChatGptErrorTextForTest = hasVisibleChatGptErrorText;

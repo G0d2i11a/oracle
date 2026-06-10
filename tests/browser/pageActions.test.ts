@@ -9,11 +9,17 @@ import {
   ensurePromptReady,
   ensureNotBlocked,
   ensureLoggedIn,
+  ensureNoChatGptSubscriptionIssue,
+  readChatGptSubscriptionIssueForTest,
 } from "../../src/browser/pageActions.js";
 import * as attachments from "../../src/browser/actions/attachments.js";
 import * as attachmentDataTransfer from "../../src/browser/actions/attachmentDataTransfer.js";
 import { buildResponseObserverExpressionForTest } from "../../src/browser/actions/assistantResponse.js";
-import { readVisibleChatGptErrorForTest } from "../../src/browser/actions/chatgptErrors.js";
+import {
+  hasHardVisibleChatGptErrorTextForTest,
+  hasVisibleChatGptErrorTextForTest,
+  readVisibleChatGptErrorForTest,
+} from "../../src/browser/actions/chatgptErrors.js";
 import type { ChromeClient } from "../../src/browser/types.js";
 
 const logger = vi.fn();
@@ -232,6 +238,90 @@ describe("ensurePromptReady", () => {
   });
 });
 
+describe("ensureNoChatGptSubscriptionIssue", () => {
+  test("refreshes until transient subscription warning disappears", async () => {
+    const page = {
+      reload: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ChromeClient["Page"];
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              message: "There was a problem loading your subscription. Please try again.",
+              source: "toast",
+            },
+          },
+        })
+        .mockResolvedValueOnce({ result: { value: "complete" } })
+        .mockResolvedValueOnce({ result: { value: { dismissed: false } } })
+        .mockResolvedValueOnce({ result: { value: null } }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      ensureNoChatGptSubscriptionIssue(page, runtime, logger, {
+        maxRefreshes: 2,
+        settleMs: 0,
+      }),
+    ).resolves.toBe(1);
+
+    expect(page.reload).toHaveBeenCalledWith({ ignoreCache: true });
+    expect(logger).toHaveBeenCalledWith(
+      "[browser] ChatGPT subscription warning detected (There was a problem loading your subscription. Please try again.); refreshing before continuing (1/2).",
+    );
+    expect(logger).toHaveBeenCalledWith(
+      "[browser] ChatGPT subscription warning cleared after 1 refresh.",
+    );
+  });
+
+  test("throws when subscription warning stays visible", async () => {
+    const page = {
+      reload: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ChromeClient["Page"];
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            message: "Subscription error. Please refresh.",
+            source: "alert",
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      ensureNoChatGptSubscriptionIssue(page, runtime, logger, {
+        maxRefreshes: 0,
+        settleMs: 0,
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        stage: "chatgpt-subscription-issue",
+        reason: "subscription-issue-visible",
+      },
+    });
+  });
+
+  test("normalizes subscription warning snapshots", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            message: "  There was an error loading your subscription.   ",
+            source: "dialog",
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(readChatGptSubscriptionIssueForTest(runtime)).resolves.toEqual({
+      message: "There was an error loading your subscription.",
+      source: "dialog",
+    });
+  });
+});
+
 describe("ensureNotBlocked", () => {
   test("throws descriptive error when cloudflare detected", async () => {
     const runtime = {
@@ -404,6 +494,20 @@ describe("waitForAssistantResponse", () => {
       source: "assistant-turn",
       retryAvailable: true,
     });
+  });
+
+  test("classifies hard ChatGPT generation error text without requiring retry UI", () => {
+    const hardError =
+      "Something went wrong while generating the response. If this issue persists please contact us through our help center at help.openai.com.";
+
+    expect(hasHardVisibleChatGptErrorTextForTest(hardError)).toBe(true);
+    expect(hasVisibleChatGptErrorTextForTest(hardError)).toBe(true);
+    expect(
+      hasHardVisibleChatGptErrorTextForTest("Unable to display this message due to an error."),
+    ).toBe(true);
+    expect(
+      hasHardVisibleChatGptErrorTextForTest("I found an error in the code and fixed it."),
+    ).toBe(false);
   });
 
   test("returns captured assistant payload", async () => {

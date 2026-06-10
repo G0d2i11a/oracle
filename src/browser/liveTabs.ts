@@ -11,6 +11,7 @@ import {
   SEND_BUTTON_SELECTORS,
 } from "./constants.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./actions/assistantResponse.js";
+import { hasHardVisibleChatGptErrorText } from "./actions/chatgptErrors.js";
 import { buildVisibleStopButtonFunction } from "./actions/stopButton.js";
 import { delay } from "./utils.js";
 
@@ -1046,6 +1047,10 @@ export async function inspectChatGptTab(
     )
       ? (deepResearchResultText as string)
       : lastAssistantText;
+    const visibleErrorMessage = hasHardVisibleChatGptErrorText(effectiveLastAssistantText)
+      ? trimToSnippet(effectiveLastAssistantText, 240)
+      : "";
+    const effectiveBlocker = visibleErrorMessage ? "chatgpt-visible-error" : blocker;
     const assistantCount = Number.isFinite(info.assistantCount) ? Number(info.assistantCount) : 0;
     const hasConversationActivity = Boolean(
       assistantCount > 0 ||
@@ -1097,7 +1102,7 @@ export async function inspectChatGptTab(
       sendExists: Boolean(info.sendExists),
       promptReady: Boolean(info.promptReady),
       loginButtonExists: Boolean(info.loginButtonExists),
-      authenticated: Boolean(!blocker && info.authenticated),
+      authenticated: Boolean(!effectiveBlocker && info.authenticated),
       assistantCount,
       firstAssistantText,
       firstAssistantSnippet: trimToSnippet(firstAssistantText),
@@ -1111,10 +1116,11 @@ export async function inspectChatGptTab(
       conversationId: extractConversationIdFromUrl(info.url ?? target.url ?? ""),
       fingerprint: "",
       state: "detached",
-      blocker,
+      blocker: effectiveBlocker,
       deepResearchStopExists,
       deepResearchActive,
       deepResearchResultText,
+      error: visibleErrorMessage || undefined,
       lastAssistantMarkdown: null,
       lastAssistantMessageId:
         typeof snapshot?.messageId === "string" ? snapshot.messageId : undefined,

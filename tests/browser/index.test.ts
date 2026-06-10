@@ -10,6 +10,7 @@ import {
   resolveRemoteTabLeaseProfileDirForTest,
   runBrowserMode,
   runSubmissionWithRecoveryForTest,
+  shouldRequireProExtendedEvidenceForTest,
   shouldSkipThinkingTimeSelectionForTest,
   shouldPreferSystemTmpDirForTest,
   shouldPreserveBrowserOnErrorForTest,
@@ -58,6 +59,15 @@ describe("shouldPreserveBrowserOnErrorForTest", () => {
   test("preserves incomplete assistant responses for reattach", () => {
     const error = new BrowserAutomationError("assistant incomplete", {
       stage: "assistant-response",
+    });
+
+    expect(shouldPreserveBrowserOnErrorForTest(error, false)).toBe(true);
+    expect(classifyPreservedBrowserErrorForTest(error, false)).toBe("reattachable-capture");
+  });
+
+  test("preserves missing Pro Extended evidence for reattach", () => {
+    const error = new BrowserAutomationError("missing Pro Extended evidence", {
+      stage: "chatgpt-pro-extended-evidence-missing",
     });
 
     expect(shouldPreserveBrowserOnErrorForTest(error, false)).toBe(true);
@@ -255,6 +265,59 @@ describe("browser answer finalization guard", () => {
 
     expect(verdict.accepted).toBe(true);
   });
+
+  test("rejects Pro Extended runs without completion evidence", () => {
+    const verdict = __test__.validateBrowserAnswerFinalization({
+      prompt: "Provide TypeScript diffs and regression tests.",
+      answerText: "## Patch\n\n```ts\nconst ok = true;\n```\n\n## Tests\n\nRun vitest.",
+      answerMarkdown: "## Patch\n\n```ts\nconst ok = true;\n```\n\n## Tests\n\nRun vitest.",
+      stopVisible: false,
+      thinkingActive: false,
+      completionUiVisible: true,
+      completionUiScopedToMessage: true,
+      requireProExtendedEvidence: true,
+      proExtendedEvidence: { state: "missing", text: "", evidence: [] },
+    });
+
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.reasons).toContain("pro-extended-evidence-missing");
+  });
+
+  test("accepts Pro Extended runs with completed reasoning evidence", () => {
+    const verdict = __test__.validateBrowserAnswerFinalization({
+      prompt: "Provide TypeScript diffs and regression tests.",
+      answerText: "## Patch\n\n```ts\nconst ok = true;\n```\n\n## Tests\n\nRun vitest.",
+      answerMarkdown: "## Patch\n\n```ts\nconst ok = true;\n```\n\n## Tests\n\nRun vitest.",
+      stopVisible: false,
+      thinkingActive: false,
+      completionUiVisible: true,
+      completionUiScopedToMessage: true,
+      requireProExtendedEvidence: true,
+      proExtendedEvidence: {
+        state: "complete",
+        text: "Thought for 7m 53s",
+        evidence: ["reasoning-duration"],
+      },
+    });
+
+    expect(verdict.accepted).toBe(true);
+  });
+
+  test("does not require Pro Extended evidence for ordinary browser runs", () => {
+    const verdict = __test__.validateBrowserAnswerFinalization({
+      prompt: "Provide TypeScript diffs and regression tests.",
+      answerText: "## Patch\n\n```ts\nconst ok = true;\n```\n\n## Tests\n\nRun vitest.",
+      answerMarkdown: "## Patch\n\n```ts\nconst ok = true;\n```\n\n## Tests\n\nRun vitest.",
+      stopVisible: false,
+      thinkingActive: false,
+      completionUiVisible: true,
+      completionUiScopedToMessage: true,
+      requireProExtendedEvidence: false,
+      proExtendedEvidence: { state: "missing", text: "", evidence: [] },
+    });
+
+    expect(verdict.accepted).toBe(true);
+  });
 });
 
 describe("browser run target cleanup", () => {
@@ -307,6 +370,45 @@ describe("shouldSkipThinkingTimeSelectionForTest", () => {
     expect(shouldSkipThinkingTimeSelectionForTest("gpt-5.5", "heavy")).toBe(false);
     expect(shouldSkipThinkingTimeSelectionForTest("GPT-5.5 Pro", "heavy")).toBe(false);
     expect(shouldSkipThinkingTimeSelectionForTest("GPT-5.2", "extended")).toBe(false);
+  });
+});
+
+describe("shouldRequireProExtendedEvidenceForTest", () => {
+  test("requires final evidence for GPT-5.5 Pro Extended browser runs", () => {
+    expect(
+      shouldRequireProExtendedEvidenceForTest({
+        desiredModel: "gpt-5.5-pro",
+        thinkingTime: "extended",
+        modelStrategy: "select",
+        researchMode: "off",
+      }),
+    ).toBe(true);
+    expect(
+      shouldRequireProExtendedEvidenceForTest({
+        desiredModel: "5.5 Extended Pro",
+        modelStrategy: "select",
+        researchMode: "off",
+      }),
+    ).toBe(true);
+  });
+
+  test("does not require final evidence when model selection is ignored or deep research owns flow", () => {
+    expect(
+      shouldRequireProExtendedEvidenceForTest({
+        desiredModel: "gpt-5.5-pro",
+        thinkingTime: "extended",
+        modelStrategy: "ignore",
+        researchMode: "off",
+      }),
+    ).toBe(false);
+    expect(
+      shouldRequireProExtendedEvidenceForTest({
+        desiredModel: "gpt-5.5-pro",
+        thinkingTime: "extended",
+        modelStrategy: "select",
+        researchMode: "deep",
+      }),
+    ).toBe(false);
   });
 });
 

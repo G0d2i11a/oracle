@@ -72,6 +72,16 @@ export interface PromptReadyNavigationDeps {
   ensurePromptReady?: typeof ensurePromptReady;
 }
 
+export interface ChatGptSubscriptionIssueSnapshot {
+  message: string;
+  source: "alert" | "dialog" | "toast" | "page";
+}
+
+export interface SubscriptionIssueRecoveryOptions {
+  maxRefreshes?: number;
+  settleMs?: number;
+}
+
 async function dismissBlockingUi(
   Runtime: ChromeClient["Runtime"],
   logger: BrowserLogger,
@@ -148,6 +158,7 @@ export async function navigateToPromptReadyWithFallback(
   await navigate(Page, Runtime, url, logger);
   await ensureBlocked(Runtime, headless, logger);
   await dismissBlockingUi(Runtime, logger).catch(() => false);
+  await ensureNoChatGptSubscriptionIssue(Page, Runtime, logger);
   try {
     await ensureReady(Runtime, timeoutMs, logger);
     return { usedFallback: false };
@@ -164,9 +175,237 @@ export async function navigateToPromptReadyWithFallback(
     await navigate(Page, Runtime, fallbackUrl, logger);
     await ensureBlocked(Runtime, headless, logger);
     await dismissBlockingUi(Runtime, logger).catch(() => false);
+    await ensureNoChatGptSubscriptionIssue(Page, Runtime, logger);
     await ensureReady(Runtime, fallbackTimeout, logger);
     return { usedFallback: true };
   }
+}
+
+export async function ensureNoChatGptSubscriptionIssue(
+  Page: ChromeClient["Page"],
+  Runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+  options: SubscriptionIssueRecoveryOptions = {},
+): Promise<number> {
+  const maxRefreshes = options.maxRefreshes ?? resolveSubscriptionIssueRefreshes();
+  const settleMs = Math.max(0, options.settleMs ?? 1_500);
+
+  for (let refreshCount = 0; refreshCount <= maxRefreshes; refreshCount += 1) {
+    const issue = await readChatGptSubscriptionIssue(Runtime);
+    if (!issue) {
+      if (refreshCount > 0) {
+        logger(
+          `[browser] ChatGPT subscription warning cleared after ${refreshCount} refresh${refreshCount === 1 ? "" : "es"}.`,
+        );
+      }
+      return refreshCount;
+    }
+
+    if (refreshCount >= maxRefreshes) {
+      throw new BrowserAutomationError(
+        `ChatGPT subscription warning did not clear after ${maxRefreshes} refresh${maxRefreshes === 1 ? "" : "es"}: ${issue.message}`,
+        {
+          stage: "chatgpt-subscription-issue",
+          reason: "subscription-issue-visible",
+          message: issue.message,
+          source: issue.source,
+          refreshes: refreshCount,
+        },
+      );
+    }
+
+    logger(
+      `[browser] ChatGPT subscription warning detected (${issue.message}); refreshing before continuing (${refreshCount + 1}/${maxRefreshes}).`,
+    );
+    await Page.reload({ ignoreCache: true });
+    await waitForDocumentReady(Runtime, 45_000);
+    await dismissBlockingUi(Runtime, logger).catch(() => false);
+    await delay(settleMs);
+  }
+
+  return maxRefreshes;
+}
+
+export async function readChatGptSubscriptionIssue(
+  Runtime: ChromeClient["Runtime"],
+): Promise<ChatGptSubscriptionIssueSnapshot | null> {
+  if (typeof Runtime.evaluate !== "function") {
+    return null;
+  }
+  const outcome = await Runtime.evaluate({
+    expression: buildChatGptSubscriptionIssueExpression(),
+    returnByValue: true,
+  }).catch(() => null);
+  const value = outcome?.result?.value as Partial<ChatGptSubscriptionIssueSnapshot> | undefined;
+  const message = sanitizeSubscriptionIssueMessage(value?.message);
+  if (!message) {
+    return null;
+  }
+  const source =
+    value?.source === "alert" ||
+    value?.source === "dialog" ||
+    value?.source === "toast" ||
+    value?.source === "page"
+      ? value.source
+      : "page";
+  return { message, source };
+}
+
+function sanitizeSubscriptionIssueMessage(raw: unknown): string {
+  if (typeof raw !== "string") {
+    return "";
+  }
+  return raw.replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
+function resolveSubscriptionIssueRefreshes(): number {
+  const raw = process.env.ORACLE_BROWSER_SUBSCRIPTION_REFRESHES;
+  if (raw === undefined || raw.trim() === "") {
+    return 8;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(25, Math.floor(parsed)));
+}
+
+function buildChatGptSubscriptionIssueExpression(): string {
+  return `(() => {
+    const normalize = (value) =>
+      String(value || '')
+        .normalize('NFD')
+        .replace(/[\\u0300-\\u036f]/g, '')
+        .toLowerCase()
+        .replace(/\\s+/g, ' ')
+        .trim();
+    const visibleText = (node) =>
+      String(node?.innerText || node?.textContent || '').replace(/\\s+/g, ' ').trim();
+    const isVisible = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const rect = node.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle(node);
+      if (
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        (style.opacity !== '' && Number(style.opacity) === 0)
+      ) {
+        return false;
+      }
+      return rect.bottom >= 0 && rect.right >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+    };
+    const sourceFor = (node) => {
+      const role = String(node.getAttribute?.('role') || '').toLowerCase();
+      const tag = String(node.tagName || '').toLowerCase();
+      const marker = normalize([
+        node.getAttribute?.('data-testid'),
+        node.getAttribute?.('class'),
+        node.getAttribute?.('aria-live'),
+      ].filter(Boolean).join(' '));
+      if (role === 'alert' || marker.includes('alert')) return 'alert';
+      if (role === 'dialog' || tag === 'dialog' || marker.includes('modal')) return 'dialog';
+      if (marker.includes('toast') || marker.includes('sonner')) return 'toast';
+      return 'page';
+    };
+    const isConversationOrComposerChrome = (node) =>
+      Boolean(
+        node.closest?.(
+          [
+            'nav',
+            'aside',
+            'form',
+            '[contenteditable="true"]',
+            'textarea',
+            '[data-testid*="composer"]',
+            '[id*="composer"]',
+            '[data-testid^="conversation-turn"]',
+            '[data-message-author-role]',
+          ].join(','),
+        ),
+      );
+    const subscriptionSignals = [
+      'subscription',
+      'subscribed',
+      'billing',
+      'current plan',
+      'your plan',
+      'paid plan',
+      'chatgpt plus',
+      'chatgpt pro',
+      'pro subscription',
+      'plus subscription',
+      '订阅',
+      '套餐',
+      '会员',
+      '付费计划',
+    ];
+    const problemSignals = [
+      'error',
+      'problem',
+      'issue',
+      'failed',
+      'failure',
+      'unable',
+      'unavailable',
+      'could not',
+      "couldn't",
+      'try again',
+      'retry',
+      'refresh',
+      'reload',
+      'temporarily',
+      'access',
+      'not available',
+      'upgrade',
+      '出了点问题',
+      '错误',
+      '失败',
+      '无法',
+      '不可用',
+      '稍后',
+      '重试',
+      '刷新',
+      '权限',
+    ];
+    const isSubscriptionIssueText = (raw) => {
+      const text = normalize(raw);
+      if (!text) return false;
+      const hasSubscription = subscriptionSignals.some((signal) => text.includes(signal));
+      const hasProblem = problemSignals.some((signal) => text.includes(signal));
+      if (hasSubscription && hasProblem) return true;
+      return (
+        text.includes('something went wrong') &&
+        (text.includes('subscription') || text.includes('plan') || text.includes('billing'))
+      );
+    };
+    const selectors = [
+      '[role="alert"]',
+      '[aria-live="assertive"]',
+      '[aria-live="polite"]',
+      '[role="dialog"]',
+      'dialog',
+      '[data-testid*="toast"]',
+      '[class*="toast"]',
+      '[class*="Toast"]',
+      '[class*="sonner"]',
+      '[class*="modal"]',
+      '[data-testid*="modal"]',
+      '[class*="banner"]',
+      'body > div',
+    ].join(',');
+    const nodes = Array.from(document.querySelectorAll(selectors));
+    for (const node of nodes) {
+      if (!(node instanceof HTMLElement) || !isVisible(node)) continue;
+      if (isConversationOrComposerChrome(node)) continue;
+      const text = visibleText(node);
+      if (!text || text.length > 1400) continue;
+      if (isSubscriptionIssueText(text)) {
+        return { message: text.slice(0, 240), source: sourceFor(node) };
+      }
+    }
+    return null;
+  })()`;
 }
 
 export async function ensureNotBlocked(
@@ -428,6 +667,9 @@ function isAuthLoginUrl(url: string): boolean {
 export function buildUnarchiveConversationExpressionForTest(): string {
   return buildUnarchiveConversationExpression();
 }
+
+export const readChatGptSubscriptionIssueForTest = readChatGptSubscriptionIssue;
+export const ensureNoChatGptSubscriptionIssueForTest = ensureNoChatGptSubscriptionIssue;
 
 function buildUnarchiveConversationExpression(): string {
   return `(() => {
