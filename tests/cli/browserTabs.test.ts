@@ -146,6 +146,27 @@ describe("browser tab CLI helpers", () => {
     ).toBe("completed");
   });
 
+  test("blocks live tail completion when Pro reasoning UI is missing", () => {
+    const unchangedSince = Date.now() - 10_000;
+    const activeClearedSince = Date.now() - 10_000;
+    expect(
+      deriveLiveTailStateForTest(
+        {
+          stopExists: false,
+          thinkingActive: false,
+          reasoningDowngradeSuspected: true,
+          completionVisible: true,
+          authenticated: true,
+        },
+        unchangedSince,
+        60_000,
+        "A completed-looking answer without Thought for evidence.",
+        8_000,
+        activeClearedSince,
+      ),
+    ).toBe("blocked");
+  });
+
   test("does not treat a one-character harvest as completed output", () => {
     const unchangedSince = Date.now() - 1_000;
     expect(
@@ -554,7 +575,7 @@ describe("browser tab CLI helpers", () => {
     ]);
   });
 
-  test("formats completed Pro tabs with missing reasoning UI as suspect", () => {
+  test("formats completed Pro tabs with missing reasoning UI as blocked", () => {
     const tab = {
       targetId: "target-1",
       title: "ChatGPT",
@@ -582,12 +603,13 @@ describe("browser tab CLI helpers", () => {
       focused: true,
       visibilityState: "visible",
       fingerprint: "fp",
-      state: "completed",
+      state: "blocked",
+      blocker: "reasoning-downgrade-suspected",
       lastAssistantMarkdown: "Answer",
     } as ChatGptTabSummary;
 
     expect(formatBrowserTabStatusLinesForTest(tab, null)).toEqual([
-      "- target-1 completed active=no stop=no progress=no completeUi=yes send=yes reasoningUi=missing downgrade=suspect model=Pro turns=1",
+      "- target-1 blocked active=no stop=no progress=no completeUi=yes send=yes reasoningUi=missing downgrade=suspect blocker=reasoning-downgrade-suspected model=Pro turns=1",
       "  title=ChatGPT",
       "  url=https://chatgpt.com/c/conversation-1",
       "  conversation=conversation-1",

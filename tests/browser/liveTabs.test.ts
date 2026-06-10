@@ -413,6 +413,9 @@ describe("liveTabs helpers", () => {
             currentModelLabel: "Pro",
             stopExists: false,
             thinkingActive: true,
+            reasoningUiState: "complete",
+            reasoningUiText: "Thought for 8s",
+            reasoningUiEvidence: ["reasoning-duration"],
             completionVisible: true,
             sendExists: true,
             promptReady: true,
@@ -445,7 +448,7 @@ describe("liveTabs helpers", () => {
     expect(summary.state).toBe("completed");
   });
 
-  test("marks completed Pro runs without reasoning UI as downgrade suspects", async () => {
+  test("blocks completed Pro runs without reasoning UI as downgrade suspects", async () => {
     cdpMocks.runtime.evaluate
       .mockResolvedValueOnce({
         result: {
@@ -486,7 +489,8 @@ describe("liveTabs helpers", () => {
 
     expect(summary.reasoningUiState).toBe("missing");
     expect(summary.reasoningDowngradeSuspected).toBe(true);
-    expect(summary.state).toBe("completed");
+    expect(summary.state).toBe("blocked");
+    expect(summary.blocker).toBe("reasoning-downgrade-suspected");
   });
 
   test("does not flag completed Pro runs with Thought duration UI", async () => {

@@ -20,6 +20,7 @@ export const DEFAULT_REMOTE_CHROME_PORT = 9222;
 
 const LOGIN_CTA_PATTERN =
   /\b(log in|login|sign up|sign in|continue with google|continue with microsoft)\b/i;
+const REASONING_DOWNGRADE_BLOCKER = "reasoning-downgrade-suspected";
 
 export type BrowserReasoningUiState = "active" | "complete" | "missing" | "unknown";
 
@@ -1085,6 +1086,8 @@ export async function inspectChatGptTab(
     const reasoningUiState: BrowserReasoningUiState = reasoningDowngradeSuspected
       ? "missing"
       : rawReasoningUiState;
+    const finalBlocker =
+      effectiveBlocker ?? (reasoningDowngradeSuspected ? REASONING_DOWNGRADE_BLOCKER : undefined);
     const summary: ChatGptTabSummary = {
       host,
       port,
@@ -1102,7 +1105,7 @@ export async function inspectChatGptTab(
       sendExists: Boolean(info.sendExists),
       promptReady: Boolean(info.promptReady),
       loginButtonExists: Boolean(info.loginButtonExists),
-      authenticated: Boolean(!effectiveBlocker && info.authenticated),
+      authenticated: Boolean(!finalBlocker && info.authenticated),
       assistantCount,
       firstAssistantText,
       firstAssistantSnippet: trimToSnippet(firstAssistantText),
@@ -1116,7 +1119,7 @@ export async function inspectChatGptTab(
       conversationId: extractConversationIdFromUrl(info.url ?? target.url ?? ""),
       fingerprint: "",
       state: "detached",
-      blocker: effectiveBlocker,
+      blocker: finalBlocker,
       deepResearchStopExists,
       deepResearchActive,
       deepResearchResultText,

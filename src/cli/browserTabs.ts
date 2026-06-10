@@ -414,7 +414,12 @@ export function resolveBrowserRuntimeLabelForTest(
 function deriveLiveTailState(
   harvested: Pick<
     ChatGptTabSummary,
-    "blocker" | "stopExists" | "thinkingActive" | "completionVisible" | "authenticated"
+    | "blocker"
+    | "reasoningDowngradeSuspected"
+    | "stopExists"
+    | "thinkingActive"
+    | "completionVisible"
+    | "authenticated"
   >,
   unchangedSince: number,
   stallThresholdMs: number,
@@ -423,6 +428,9 @@ function deriveLiveTailState(
   activeClearedSince = unchangedSince,
 ): BrowserHarvestState {
   if (harvested.blocker) {
+    return "blocked";
+  }
+  if (harvested.reasoningDowngradeSuspected) {
     return "blocked";
   }
   if (harvested.stopExists) {
@@ -452,7 +460,12 @@ function deriveLiveTailState(
 export function deriveLiveTailStateForTest(
   harvested: Pick<
     ChatGptTabSummary,
-    "blocker" | "stopExists" | "thinkingActive" | "completionVisible" | "authenticated"
+    | "blocker"
+    | "reasoningDowngradeSuspected"
+    | "stopExists"
+    | "thinkingActive"
+    | "completionVisible"
+    | "authenticated"
   >,
   unchangedSince: number,
   stallThresholdMs: number,
@@ -978,6 +991,9 @@ export async function liveTailSessionBrowserOutput(
       const finalHarvest: ChatGptTabSummary = {
         ...harvested,
         state: derivedState,
+        blocker:
+          harvested.blocker ??
+          (harvested.reasoningDowngradeSuspected ? "reasoning-downgrade-suspected" : undefined),
       };
       await persistHarvest(sessionId, meta, finalHarvest);
       printHarvestSummary(sessionId, finalHarvest, resolveBrowserOwner(meta));

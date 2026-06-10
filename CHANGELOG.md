@@ -31,6 +31,7 @@
 ### Fixed
 
 - Browser: refresh through transient ChatGPT subscription warnings before submission/model selection and reject GPT-5.5 Pro Extended captures that finish without visible final Pro Extended completion evidence.
+- Browser: mark completed Pro/Thinking browser tabs without visible reasoning UI as blocked downgrade evidence in status, harvest, and live-tail paths instead of treating them as usable completions.
 - Browser: surface ChatGPT reasoning/Thought UI evidence in live tab and harvest status, and flag completed Pro/Thinking tabs with no visible reasoning UI as downgrade-suspect evidence.
 - Browser: reconcile stale `running` browser sessions by inspecting the matched ChatGPT tab before preserving them, and clarify that unrelated live browser sessions do not block new Oracle runs.
 - Browser: treat visible ChatGPT Stop/Pause controls as the highest-priority active-run signal across assistant capture, Deep Research, live-tab status, and stale-session cleanup, including localized labels such as `停止` and `暂停`.
