@@ -209,6 +209,7 @@ function shouldSkipThinkingTimeSelection(
     normalized.includes("gpt 5.5 pro") ||
     normalized.includes("gpt 5 5 pro") ||
     (normalized.includes("5.5") && normalized.includes("pro") && normalized.includes("extended")) ||
+    (normalized.includes("pro") && normalized.includes("extended")) ||
     normalized.includes("进阶")
   );
 }

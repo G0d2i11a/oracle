@@ -879,12 +879,16 @@ function buildModelSelectionExpression(
         const controlled = document.getElementById(controlledId);
         if (controlled) candidateMenus.push(controlled);
       }
-      for (const menu of getMenuRoots()) {
-        if (!candidateMenus.includes(menu)) {
-          candidateMenus.push(menu);
+      if (candidateMenus.length === 0) {
+        for (const menu of getMenuRoots()) {
+          if (!candidateMenus.includes(menu)) {
+            candidateMenus.push(menu);
+          }
         }
       }
       for (const menu of candidateMenus) {
+        const menuIsControlledByTrailing =
+          Boolean(controlledId) && menu instanceof HTMLElement && menu.id === controlledId;
         const effortMenu = menuLooksLikeEffortMenu(menu);
         const menuText = normalizeText(
           [
@@ -907,7 +911,7 @@ function buildModelSelectionExpression(
           const optionExplicitlyPro = hasProText(optionText) && !optionText.includes('instant');
           if (
             (isProExtendedEffortOption(option) && (proContext || optionExplicitlyPro)) ||
-            (effortMenu && proContext && isStandaloneExtendedEffortLabel(option))
+            (effortMenu && proContext && menuIsControlledByTrailing && isStandaloneExtendedEffortLabel(option))
           ) {
             return option;
           }

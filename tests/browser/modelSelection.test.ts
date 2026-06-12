@@ -185,6 +185,11 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("let option = null;");
     expect(expression).toContain("const trailing = findCurrentModelEffortTrailing();");
     expect(expression).toContain("if (selected && isProEffortContext(selected))");
+    expect(expression).toContain("if (candidateMenus.length === 0) {");
+    expect(expression).toContain("const menuIsControlledByTrailing =");
+    expect(expression).toContain(
+      "effortMenu && proContext && menuIsControlledByTrailing && isStandaloneExtendedEffortLabel(option)",
+    );
     expect(expression).not.toContain("let option = findExtendedEffortMenuOption(null);");
     expect(expression).toContain("label: 'Pro Extended'");
     expect(expression).toContain("const hasAnswerNowText = (value) =>");
