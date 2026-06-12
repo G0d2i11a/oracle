@@ -14,7 +14,10 @@ import {
   sessionMatchesTab,
   type ChatGptTabSummary,
 } from "../browser/liveTabs.js";
-import { hasHardVisibleChatGptErrorText } from "../browser/actions/chatgptErrors.js";
+import {
+  hasChatGptSubscriptionIssueText,
+  hasHardVisibleChatGptErrorText,
+} from "../browser/actions/chatgptErrors.js";
 import { resolveOutputPath } from "./writeOutputPath.js";
 
 const LIVE_POLL_MS = 2000;
@@ -850,7 +853,7 @@ async function maybeWriteHarvestOutput(
 }
 
 function isVisibleChatGptErrorOutput(content: string): boolean {
-  return hasHardVisibleChatGptErrorText(content);
+  return hasHardVisibleChatGptErrorText(content) || hasChatGptSubscriptionIssueText(content);
 }
 
 function isDowngradeSuspectHarvest(harvested: ChatGptTabSummary): boolean {
@@ -861,6 +864,7 @@ function outputForHarvest(harvested: ChatGptTabSummary): string {
   const output = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "";
   if (
     harvested.blocker === "chatgpt-visible-error" ||
+    harvested.blocker === "chatgpt-subscription-issue" ||
     isVisibleChatGptErrorOutput(output) ||
     isDowngradeSuspectHarvest(harvested)
   ) {

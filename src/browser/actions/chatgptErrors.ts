@@ -1,6 +1,7 @@
 import type { ChromeClient } from "../types.js";
 import { ASSISTANT_ROLE_SELECTOR, CONVERSATION_TURN_SELECTOR } from "../constants.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
+import { createChatGptSubscriptionIssueError } from "./navigation.js";
 
 const VISIBLE_CHATGPT_ERROR_PHRASES = [
   "something went wrong",
@@ -20,6 +21,10 @@ const VISIBLE_CHATGPT_ERROR_PHRASES = [
   "conversation not found",
   "we ran into an issue",
   "please try again",
+  "loading your subscription",
+  "subscription error",
+  "subscription warning",
+  "subscription issue",
   "出了点问题",
   "出错了",
   "发生错误",
@@ -47,6 +52,52 @@ const VISIBLE_CHATGPT_RETRY_PHRASES = [
   "重试",
   "再试一次",
   "重新生成",
+];
+
+const SUBSCRIPTION_ISSUE_SUBJECT_PHRASES = [
+  "subscription",
+  "subscribed",
+  "billing",
+  "current plan",
+  "your plan",
+  "paid plan",
+  "chatgpt plus",
+  "chatgpt pro",
+  "pro subscription",
+  "plus subscription",
+  "订阅",
+  "套餐",
+  "会员",
+  "付费计划",
+];
+
+const SUBSCRIPTION_ISSUE_PROBLEM_PHRASES = [
+  "error",
+  "problem",
+  "issue",
+  "failed",
+  "failure",
+  "unable",
+  "unavailable",
+  "could not",
+  "couldn't",
+  "try again",
+  "retry",
+  "refresh",
+  "reload",
+  "temporarily",
+  "access",
+  "not available",
+  "upgrade",
+  "出了点问题",
+  "错误",
+  "失败",
+  "无法",
+  "不可用",
+  "稍后",
+  "重试",
+  "刷新",
+  "权限",
 ];
 
 export interface ChatGptVisibleErrorSnapshot {
@@ -105,6 +156,12 @@ export async function throwIfVisibleChatGptError(
 export function createVisibleChatGptError(
   snapshot: ChatGptVisibleErrorSnapshot,
 ): BrowserAutomationError {
+  if (hasChatGptSubscriptionIssueText(snapshot.message)) {
+    return createChatGptSubscriptionIssueError({
+      message: snapshot.message,
+      source: snapshot.source === "assistant-turn" ? "page" : snapshot.source,
+    });
+  }
   return new BrowserAutomationError(`ChatGPT showed a visible error: ${snapshot.message}`, {
     stage: "chatgpt-visible-error",
     code: "visible-chatgpt-error",
@@ -148,6 +205,22 @@ function normalizeProbeText(raw: unknown): string {
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function hasChatGptSubscriptionIssueText(raw: unknown): boolean {
+  const text = normalizeProbeText(raw);
+  if (!text) {
+    return false;
+  }
+  const hasSubject = SUBSCRIPTION_ISSUE_SUBJECT_PHRASES.some((phrase) => text.includes(phrase));
+  const hasProblem = SUBSCRIPTION_ISSUE_PROBLEM_PHRASES.some((phrase) => text.includes(phrase));
+  if (hasSubject && hasProblem) {
+    return true;
+  }
+  return (
+    text.includes("something went wrong") &&
+    (text.includes("subscription") || text.includes("plan") || text.includes("billing"))
+  );
 }
 
 export function hasHardVisibleChatGptErrorText(raw: unknown): boolean {
@@ -306,3 +379,4 @@ export const readVisibleChatGptErrorForTest = readVisibleChatGptError;
 export const buildVisibleChatGptErrorExpressionForTest = buildVisibleChatGptErrorExpression;
 export const hasHardVisibleChatGptErrorTextForTest = hasHardVisibleChatGptErrorText;
 export const hasVisibleChatGptErrorTextForTest = hasVisibleChatGptErrorText;
+export const hasChatGptSubscriptionIssueTextForTest = hasChatGptSubscriptionIssueText;

@@ -19,6 +19,7 @@ Recommended defaults:
 - Model selection: use `--browser-model-strategy select`; verify the live browser label, not metadata alone.
 - Attachments: prefer `--browser-attachments always`; bundling text files is allowed only when it preserves the complete content.
 - Evidence gate: if the run resolves to Thinking Heavy, `--browser-thinking-time heavy`, base GPT-5.5, Instant, Auto, or any non-Pro Extended label, mark it tainted and rerun the same full prompt/context on GPT-5.5 Pro Extended. If the artifact only says `configured`, `desiredModel`, `meta.json`, or "live picker proof was not re-run", that is also not valid proof. `Thought for ...` is only progress/completion UI after Pro Extended has been verified; it is not model proof.
+- Subscription gate: if ChatGPT shows a subscription/plan/billing warning such as "error loading your subscription", refresh the same tab until it clears, then re-verify Pro Extended before submitting or harvesting. A completed Pro Extended-looking answer without final reasoning UI such as `Thought for ...` is tainted/downgrade-suspect and must be rerun with the same full prompt/context.
 
 ## Full-detail rule
 

@@ -5,6 +5,7 @@ export {
   ensureLoggedIn,
   ensurePromptReady,
   ensureNoChatGptSubscriptionIssue,
+  throwIfChatGptSubscriptionIssue,
   readChatGptSubscriptionIssueForTest,
   ensureNoChatGptSubscriptionIssueForTest,
   installJavaScriptDialogAutoDismissal,

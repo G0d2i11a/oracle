@@ -181,6 +181,7 @@ describe("liveTabs helpers", () => {
     expect(expression).toContain("readReasoningUi");
     expect(expression).toContain("reasoning-duration");
     expect(expression).toContain("Thought");
+    expect(expression).toContain("stopped\\s+(?:thinking|reasoning)");
     expect(expression).toContain("reasoningUiState");
     expect(expression).toContain("reasoningUiEvidence");
   });
@@ -200,6 +201,8 @@ describe("liveTabs helpers", () => {
     expect(expression).toContain("expired-session");
     expect(expression).toContain("your session has expired");
     expect(expression).toContain("const blocker = loginExpired ? 'login-expired'");
+    expect(expression).toContain("readSubscriptionIssue");
+    expect(expression).toContain("subscriptionIssueMessage");
     expect(expression).toContain("authenticated = !blocker");
   });
 
@@ -536,6 +539,102 @@ describe("liveTabs helpers", () => {
     expect(summary.reasoningUiText).toBe("Thought for 8s");
     expect(summary.reasoningUiEvidence).toEqual(["reasoning-duration"]);
     expect(summary.reasoningDowngradeSuspected).toBe(false);
+  });
+
+  test("blocks harvested subscription warning text instead of treating it as an answer", async () => {
+    const warning = "There was an error loading your subscription. Please try again.";
+    cdpMocks.runtime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            title: "ChatGPT",
+            url: "https://chatgpt.com/c/subscription-warning",
+            currentModelLabel: "Pro",
+            stopExists: false,
+            thinkingActive: false,
+            reasoningUiState: "unknown",
+            reasoningUiText: "",
+            reasoningUiEvidence: [],
+            completionVisible: true,
+            sendExists: true,
+            promptReady: true,
+            loginButtonExists: false,
+            authenticated: true,
+            assistantCount: 1,
+            firstAssistantText: warning,
+            openingLine: warning,
+            lastAssistantText: warning,
+            lastUserText: "Question",
+            visibilityState: "visible",
+            focused: false,
+          },
+        },
+      })
+      .mockResolvedValueOnce({ result: { value: null } });
+
+    const summary = await inspectChatGptTab({
+      target: {
+        targetId: "target-subscription-warning",
+        type: "page",
+        title: "ChatGPT",
+        url: "https://chatgpt.com/c/subscription-warning",
+      },
+    });
+
+    expect(summary.state).toBe("blocked");
+    expect(summary.blocker).toBe("chatgpt-subscription-issue");
+    expect(summary.authenticated).toBe(false);
+    expect(summary.error).toBe(warning);
+  });
+
+  test("blocks page-level subscription warnings even when the assistant answer looks complete", async () => {
+    const warning = "There was an error loading your subscription. Please try again.";
+    cdpMocks.runtime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            title: "ChatGPT",
+            url: "https://chatgpt.com/c/subscription-toast",
+            currentModelLabel: "Pro",
+            stopExists: false,
+            thinkingActive: false,
+            reasoningUiState: "complete",
+            reasoningUiText: "Thought for 7m 53s",
+            reasoningUiEvidence: ["reasoning-duration"],
+            completionVisible: true,
+            sendExists: true,
+            promptReady: true,
+            loginButtonExists: false,
+            authenticated: true,
+            assistantCount: 1,
+            firstAssistantText: "Final answer body.",
+            openingLine: "Final answer body.",
+            lastAssistantText: "Final answer body.",
+            lastUserText: "Question",
+            subscriptionIssueMessage: warning,
+            subscriptionIssueSource: "toast",
+            visibilityState: "visible",
+            focused: false,
+          },
+        },
+      })
+      .mockResolvedValueOnce({ result: { value: null } });
+
+    const summary = await inspectChatGptTab({
+      target: {
+        targetId: "target-subscription-toast",
+        type: "page",
+        title: "ChatGPT",
+        url: "https://chatgpt.com/c/subscription-toast",
+      },
+    });
+
+    expect(summary.state).toBe("blocked");
+    expect(summary.blocker).toBe("chatgpt-subscription-issue");
+    expect(summary.reasoningDowngradeSuspected).toBe(false);
+    expect(summary.authenticated).toBe(false);
+    expect(summary.lastAssistantText).toBe("Final answer body.");
+    expect(summary.error).toBe(warning);
   });
 
   test("does not expose Deep Research iframe activity as a Stop button", async () => {

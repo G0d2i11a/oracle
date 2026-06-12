@@ -11,7 +11,10 @@ import {
   SEND_BUTTON_SELECTORS,
 } from "./constants.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./actions/assistantResponse.js";
-import { hasHardVisibleChatGptErrorText } from "./actions/chatgptErrors.js";
+import {
+  hasChatGptSubscriptionIssueText,
+  hasHardVisibleChatGptErrorText,
+} from "./actions/chatgptErrors.js";
 import { buildVisibleStopButtonFunction } from "./actions/stopButton.js";
 import { delay } from "./utils.js";
 
@@ -354,6 +357,120 @@ function buildTabInspectionExpression(): string {
         pageText.includes('secure your account') &&
         pageText.includes('regain access');
       const blocker = loginExpired ? 'login-expired' : accountBlocked ? 'account-blocked' : '';
+      const readSubscriptionIssue = () => {
+        const subscriptionSignals = [
+          'subscription',
+          'subscribed',
+          'billing',
+          'current plan',
+          'your plan',
+          'paid plan',
+          'chatgpt plus',
+          'chatgpt pro',
+          'pro subscription',
+          'plus subscription',
+          '订阅',
+          '套餐',
+          '会员',
+          '付费计划',
+        ];
+        const problemSignals = [
+          'error',
+          'problem',
+          'issue',
+          'failed',
+          'failure',
+          'unable',
+          'unavailable',
+          'could not',
+          "couldn't",
+          'try again',
+          'retry',
+          'refresh',
+          'reload',
+          'temporarily',
+          'access',
+          'not available',
+          'upgrade',
+          '出了点问题',
+          '错误',
+          '失败',
+          '无法',
+          '不可用',
+          '稍后',
+          '重试',
+          '刷新',
+          '权限',
+        ];
+        const isSubscriptionIssueText = (raw) => {
+          const text = normalizeLower(raw);
+          if (!text) return false;
+          const hasSubscription = subscriptionSignals.some((signal) => text.includes(signal));
+          const hasProblem = problemSignals.some((signal) => text.includes(signal));
+          if (hasSubscription && hasProblem) return true;
+          return (
+            text.includes('something went wrong') &&
+            (text.includes('subscription') || text.includes('plan') || text.includes('billing'))
+          );
+        };
+        const sourceFor = (node) => {
+          const role = normalizeLower(node.getAttribute?.('role'));
+          const tag = normalizeLower(node.tagName);
+          const marker = normalizeLower([
+            node.getAttribute?.('data-testid'),
+            node.getAttribute?.('class'),
+            node.getAttribute?.('aria-live'),
+          ].filter(Boolean).join(' '));
+          if (role === 'alert' || marker.includes('alert')) return 'alert';
+          if (role === 'dialog' || tag === 'dialog' || marker.includes('modal')) return 'dialog';
+          if (marker.includes('toast') || marker.includes('sonner')) return 'toast';
+          return 'page';
+        };
+        const isConversationOrComposerChrome = (node) =>
+          Boolean(
+            node.closest?.(
+              [
+                'nav',
+                'aside',
+                'form',
+                '[contenteditable="true"]',
+                'textarea',
+                '[data-testid*="composer"]',
+                '[id*="composer"]',
+                '[data-testid^="conversation-turn"]',
+                '[data-message-author-role]',
+              ].join(','),
+            ),
+          );
+        const selectors = [
+          '[role="alert"]',
+          '[aria-live="assertive"]',
+          '[aria-live="polite"]',
+          '[role="dialog"]',
+          'dialog',
+          '[data-testid*="toast"]',
+          '[class*="toast"]',
+          '[class*="Toast"]',
+          '[class*="sonner"]',
+          '[class*="modal"]',
+          '[data-testid*="modal"]',
+          '[class*="banner"]',
+          'body > div',
+        ].join(',');
+        for (const node of Array.from(document.querySelectorAll(selectors))) {
+          if (!(node instanceof HTMLElement) || !isVisible(node)) continue;
+          if (isConversationOrComposerChrome(node)) continue;
+          const text = normalize(readNodeText(node));
+          if (!text || text.length > 1400) continue;
+          if (isSubscriptionIssueText(text)) {
+            return {
+              message: text.slice(0, 240),
+              source: sourceFor(node),
+            };
+          }
+        }
+        return null;
+      };
       const mainStopExists = hasVisibleStopButton();
       const sendButton = firstVisible(SEND_SELECTORS);
       const sendExists = Boolean(sendButton);
@@ -420,7 +537,7 @@ function buildTabInspectionExpression(): string {
       };
       const readReasoningUi = () => {
         const durationPattern = /\\b(?:thought|reasoned|reasoning|thinking)\\s+(?:for|about)\\s+(?:a few|several|\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes)(?:\\s+\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds))?)\\b|\\b(?:思考|推理)(?:了|用时|耗时)?\\s*\\d+(?:\\.\\d+)?\\s*(?:秒|分钟|s|min)\\b/i;
-        const completedControlPattern = /\\b(thoughts?|reasoning|reasoned)\\b|思考|推理/i;
+        const completedControlPattern = /\\b(stopped\\s+(?:thinking|reasoning)|thoughts?|reasoning|reasoned)\\b|思考|推理/i;
         const activePattern = /\\b(pro thinking|thinking|reasoning|finalizing answer|finalising answer)\\b|正在思考|思考中|推理中/i;
         const compactLabel = (node) => normalize([
           node?.textContent,
@@ -587,6 +704,7 @@ function buildTabInspectionExpression(): string {
             (hasThinkingIndicator() && hasConversationActivity)
           )
         );
+      const subscriptionIssue = readSubscriptionIssue();
       const authenticated = !blocker && !loginButtonExists && (promptReady || sendExists || stopExists || deepResearchFrameActive || assistantCount > 0);
       return {
         title: normalize(document.title),
@@ -610,6 +728,8 @@ function buildTabInspectionExpression(): string {
         visibilityState: document.visibilityState,
         focused: Boolean(document.hasFocus?.()),
         blocker,
+        subscriptionIssueMessage: subscriptionIssue?.message || '',
+        subscriptionIssueSource: subscriptionIssue?.source || '',
         deepResearchStopExists: false,
         deepResearchActive: deepResearchFrameActive,
       };
@@ -1015,6 +1135,8 @@ export async function inspectChatGptTab(
       visibilityState?: string;
       focused?: boolean;
       blocker?: string;
+      subscriptionIssueMessage?: string;
+      subscriptionIssueSource?: string;
       deepResearchStopExists?: boolean;
       deepResearchActive?: boolean;
     };
@@ -1048,10 +1170,24 @@ export async function inspectChatGptTab(
     )
       ? (deepResearchResultText as string)
       : lastAssistantText;
-    const visibleErrorMessage = hasHardVisibleChatGptErrorText(effectiveLastAssistantText)
+    const pageSubscriptionIssueMessage = trimToSnippet(
+      String(info.subscriptionIssueMessage ?? ""),
+      240,
+    );
+    const subscriptionIssueMessage = pageSubscriptionIssueMessage
+      ? pageSubscriptionIssueMessage
+      : hasChatGptSubscriptionIssueText(effectiveLastAssistantText)
+        ? trimToSnippet(effectiveLastAssistantText, 240)
+        : "";
+    const hardVisibleErrorMessage = hasHardVisibleChatGptErrorText(effectiveLastAssistantText)
       ? trimToSnippet(effectiveLastAssistantText, 240)
       : "";
-    const effectiveBlocker = visibleErrorMessage ? "chatgpt-visible-error" : blocker;
+    const visibleErrorMessage = subscriptionIssueMessage || hardVisibleErrorMessage;
+    const effectiveBlocker = subscriptionIssueMessage
+      ? "chatgpt-subscription-issue"
+      : hardVisibleErrorMessage
+        ? "chatgpt-visible-error"
+        : blocker;
     const assistantCount = Number.isFinite(info.assistantCount) ? Number(info.assistantCount) : 0;
     const hasConversationActivity = Boolean(
       assistantCount > 0 ||

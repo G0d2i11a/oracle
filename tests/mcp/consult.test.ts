@@ -174,7 +174,7 @@ describe("summarizeModelRunsForConsult", () => {
         browserFollowUps: ["challenge", "final"],
       },
       browserConfig: {
-        desiredModel: "5.5 Extended Pro",
+        desiredModel: "Extended Pro",
         thinkingTime: "extended",
         modelStrategy: "select",
         researchMode: "off",
@@ -191,7 +191,7 @@ describe("summarizeModelRunsForConsult", () => {
       files: ["README.md"],
       followUpCount: 2,
       browser: {
-        desiredModel: "5.5 Extended Pro",
+        desiredModel: "Extended Pro",
         thinkingTime: "extended",
         attachments: "always",
         bundleFiles: true,

@@ -292,6 +292,25 @@ describe("browser tab CLI helpers", () => {
     expect(outputForHarvestForTest(tab)).toBe("");
   });
 
+  test("does not harvest ChatGPT subscription warning output", () => {
+    const tab = {
+      blocker: "chatgpt-subscription-issue",
+      lastAssistantText: "There was an error loading your subscription. Please try again.",
+      lastAssistantMarkdown: "There was an error loading your subscription. Please try again.",
+    } as ChatGptTabSummary;
+
+    expect(outputForHarvestForTest(tab)).toBe("");
+  });
+
+  test("does not harvest subscription warning text even without a blocker", () => {
+    const tab = {
+      lastAssistantText: "There was an error loading your subscription. Please try again.",
+      lastAssistantMarkdown: "There was an error loading your subscription. Please try again.",
+    } as ChatGptTabSummary;
+
+    expect(outputForHarvestForTest(tab)).toBe("");
+  });
+
   test("does not print empty thinking-only ChatGPT home as active", () => {
     const tab = {
       stopExists: false,

@@ -16,6 +16,7 @@ import * as attachments from "../../src/browser/actions/attachments.js";
 import * as attachmentDataTransfer from "../../src/browser/actions/attachmentDataTransfer.js";
 import { buildResponseObserverExpressionForTest } from "../../src/browser/actions/assistantResponse.js";
 import {
+  hasChatGptSubscriptionIssueTextForTest,
   hasHardVisibleChatGptErrorTextForTest,
   hasVisibleChatGptErrorTextForTest,
   readVisibleChatGptErrorForTest,
@@ -453,6 +454,29 @@ describe("ensureLoggedIn", () => {
 });
 
 describe("waitForAssistantResponse", () => {
+  test("fails with a subscription issue when ChatGPT shows a subscription warning", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            message: "There was an error loading your subscription. Please try again.",
+            source: "toast",
+            retryAvailable: false,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(waitForAssistantResponse(runtime, 1000, logger)).rejects.toMatchObject({
+      name: "BrowserAutomationError",
+      details: {
+        stage: "chatgpt-subscription-issue",
+        code: "chatgpt-subscription-issue",
+        reason: "subscription-issue-visible",
+      },
+    });
+  });
+
   test("fails immediately when ChatGPT shows a visible generation error", async () => {
     const runtime = {
       evaluate: vi.fn().mockResolvedValue({
@@ -508,6 +532,11 @@ describe("waitForAssistantResponse", () => {
     expect(
       hasHardVisibleChatGptErrorTextForTest("I found an error in the code and fixed it."),
     ).toBe(false);
+    expect(
+      hasChatGptSubscriptionIssueTextForTest(
+        "There was an error loading your subscription. Please try again.",
+      ),
+    ).toBe(true);
   });
 
   test("returns captured assistant payload", async () => {

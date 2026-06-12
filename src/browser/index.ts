@@ -146,6 +146,20 @@ function isReattachableCaptureError(error: unknown): error is BrowserAutomationE
   );
 }
 
+function isChatGptSubscriptionIssueError(error: unknown): error is BrowserAutomationError {
+  if (!(error instanceof BrowserAutomationError)) {
+    return false;
+  }
+  const details = error.details as
+    | { code?: unknown; reason?: unknown; stage?: unknown }
+    | undefined;
+  return (
+    details?.stage === "chatgpt-subscription-issue" ||
+    details?.code === "chatgpt-subscription-issue" ||
+    details?.reason === "subscription-issue-visible"
+  );
+}
+
 type PreservedBrowserErrorKind = "cloudflare-challenge" | "reattachable-capture";
 
 function classifyPreservedBrowserError(
@@ -905,7 +919,7 @@ async function readBrowserProExtendedEvidence(
             ),
         );
         const durationPattern = /\\b(?:thought|reasoned|reasoning|thinking)\\s+(?:for|about)\\s+(?:a few|several|\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)(?:\\s+\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds))?)\\b|\\b(?:思考|推理)(?:了|用时|耗时)?\\s*\\d+(?:\\.\\d+)?\\s*(?:秒|分钟|小时|s|min|h)\\b/i;
-        const completedControlPattern = /\\b(thoughts?|reasoning|reasoned)\\b|思考|推理/i;
+        const completedControlPattern = /\\b(stopped\\s+(?:thinking|reasoning)|thoughts?|reasoning|reasoned)\\b|思考|推理/i;
         const activePattern = /\\b(pro thinking|thinking|reasoning|finalizing answer|finalising answer)\\b|正在思考|思考中|推理中/i;
         const selector = [
           '[data-testid*="thinking"]',
@@ -1385,24 +1399,29 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   return runBrowserModeWithVisibleErrorRetry(options, runBrowserModeAttempt);
 }
 
-type FreshTabRetryReason = "visible-chatgpt-error" | "root-conversation-stall";
+type FreshTabRetryReason =
+  | "visible-chatgpt-error"
+  | "root-conversation-stall"
+  | "pro-extended-evidence-missing";
 
 async function runBrowserModeWithVisibleErrorRetry(
   options: BrowserRunOptions,
   runAttempt: (attemptOptions: BrowserRunOptions) => Promise<BrowserRunResult>,
 ): Promise<BrowserRunResult> {
-  const maxAttempts = Math.max(
+  const maxAttemptsCap = Math.max(
     resolveVisibleChatGptErrorMaxAttempts(),
     resolveRootConversationStallMaxAttempts(),
+    resolveProExtendedEvidenceMaxAttempts(),
   );
   const logger: BrowserLogger = options.log ?? ((_message: string) => {});
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttemptsCap; attempt += 1) {
     try {
       return await runAttempt(options);
     } catch (error) {
       const retryReason = classifyFreshTabRetryReason(error);
-      if (attempt < maxAttempts && retryReason && shouldRetryVisibleChatGptError(options)) {
-        logger(formatFreshTabRetryLog(error, retryReason, attempt + 1, maxAttempts));
+      const reasonMaxAttempts = retryReason ? resolveFreshTabRetryMaxAttempts(retryReason) : 1;
+      if (attempt < reasonMaxAttempts && retryReason && shouldRetryVisibleChatGptError(options)) {
+        logger(formatFreshTabRetryLog(error, retryReason, attempt + 1, reasonMaxAttempts));
         continue;
       }
       throw error;
@@ -1414,12 +1433,28 @@ async function runBrowserModeWithVisibleErrorRetry(
   });
 }
 
+function resolveFreshTabRetryMaxAttempts(reason: FreshTabRetryReason): number {
+  if (reason === "root-conversation-stall") {
+    return resolveRootConversationStallMaxAttempts();
+  }
+  if (reason === "pro-extended-evidence-missing") {
+    return resolveProExtendedEvidenceMaxAttempts();
+  }
+  return resolveVisibleChatGptErrorMaxAttempts();
+}
+
 function classifyFreshTabRetryReason(error: unknown): FreshTabRetryReason | null {
   if (isVisibleChatGptError(error)) {
     return "visible-chatgpt-error";
   }
   if (isRootConversationStallError(error)) {
     return "root-conversation-stall";
+  }
+  if (
+    error instanceof BrowserAutomationError &&
+    error.details?.stage === "chatgpt-pro-extended-evidence-missing"
+  ) {
+    return "pro-extended-evidence-missing";
   }
   return null;
 }
@@ -1437,6 +1472,13 @@ function formatFreshTabRetryLog(
         : "unknown";
     return `[browser] ChatGPT stayed on an unsaved root tab after submit (${url}); retrying in a fresh tab (attempt ${attempt}/${maxAttempts}).`;
   }
+  if (reason === "pro-extended-evidence-missing") {
+    const label =
+      error instanceof BrowserAutomationError && typeof error.details?.currentModelLabel === "string"
+        ? error.details.currentModelLabel
+        : "unknown";
+    return `[browser] Pro Extended completion evidence missing (model=${label}); retrying in a fresh tab (attempt ${attempt}/${maxAttempts}).`;
+  }
   const message =
     error instanceof BrowserAutomationError && typeof error.details?.message === "string"
       ? error.details.message
@@ -1444,6 +1486,18 @@ function formatFreshTabRetryLog(
         ? error.message
         : String(error);
   return `[browser] ChatGPT visible error detected (${message}); retrying in a fresh tab (attempt ${attempt}/${maxAttempts}).`;
+}
+
+function resolveProExtendedEvidenceMaxAttempts(): number {
+  const raw = process.env.ORACLE_BROWSER_PRO_EXTENDED_EVIDENCE_RETRIES;
+  if (raw === undefined || raw.trim() === "") {
+    return 3;
+  }
+  const retries = Number(raw);
+  if (!Number.isFinite(retries) || retries <= 0) {
+    return 1;
+  }
+  return Math.max(1, Math.min(6, Math.floor(retries) + 1));
 }
 
 function resolveVisibleChatGptErrorMaxAttempts(): number {
@@ -2282,6 +2336,19 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
         controllerPid: process.pid,
       };
     }
+    const recoverSubscriptionIssueBeforeAssistantRetry = async () => {
+      await raceWithDisconnect(
+        clearChatGptSubscriptionIssueForRun({
+          Page,
+          Runtime,
+          logger,
+          inputTimeoutMs: config.inputTimeoutMs,
+          desiredModel: config.desiredModel,
+          modelStrategy,
+          reselectModel: !deepResearch,
+        }),
+      );
+    };
     // Helper to normalize text for echo detection (collapse whitespace, lowercase)
     const normalizeForComparison = (text: string): string =>
       text.toLowerCase().replace(/\s+/g, " ").trim();
@@ -2451,6 +2518,7 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
                 logger,
                 baselineTurns ?? undefined,
                 expectedConversationId(),
+                recoverSubscriptionIssueBeforeAssistantRetry,
               ),
             timeoutMs,
             logger,
@@ -2488,6 +2556,7 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
                     logger,
                     baselineTurns ?? undefined,
                     expectedConversationId(),
+                    recoverSubscriptionIssueBeforeAssistantRetry,
                   ),
                 timeoutMs: config.timeoutMs,
                 logger,
@@ -2714,6 +2783,7 @@ async function runBrowserModeAttempt(options: BrowserRunOptions): Promise<Browse
               logger,
               baselineTurns ?? undefined,
               expectedConversationId(),
+              recoverSubscriptionIssueBeforeAssistantRetry,
             ),
           ),
         );
@@ -3821,6 +3891,17 @@ async function runRemoteBrowserMode(
         controllerPid: process.pid,
       };
     }
+    const recoverSubscriptionIssueBeforeAssistantRetry = async () => {
+      await clearChatGptSubscriptionIssueForRun({
+        Page,
+        Runtime,
+        logger,
+        inputTimeoutMs: config.inputTimeoutMs,
+        desiredModel: config.desiredModel,
+        modelStrategy,
+        reselectModel: !deepResearch,
+      });
+    };
     // Helper to normalize text for echo detection (collapse whitespace, lowercase)
     const normalizeForComparison = (text: string): string =>
       text.toLowerCase().replace(/\s+/g, " ").trim();
@@ -3987,6 +4068,7 @@ async function runRemoteBrowserMode(
               logger,
               baselineTurns ?? undefined,
               expectedConversationId(),
+              recoverSubscriptionIssueBeforeAssistantRetry,
             ),
           timeoutMs,
           logger,
@@ -4026,6 +4108,7 @@ async function runRemoteBrowserMode(
                   logger,
                   baselineTurns ?? undefined,
                   expectedConversationId(),
+                  recoverSubscriptionIssueBeforeAssistantRetry,
                 ),
               timeoutMs: config.timeoutMs,
               logger,
@@ -4249,6 +4332,7 @@ async function runRemoteBrowserMode(
             logger,
             baselineTurns ?? undefined,
             expectedConversationId(),
+            recoverSubscriptionIssueBeforeAssistantRetry,
           ),
         );
         if (finalAnswer.text.trim().length >= turnAnswerText.trim().length) {
@@ -4609,33 +4693,45 @@ async function waitForAssistantResponseWithReload(
   logger: BrowserLogger,
   minTurnIndex?: number,
   expectedConversationId?: string,
+  recoverSubscriptionIssue?: () => Promise<void>,
 ) {
-  try {
-    return await waitForAssistantResponse(
-      Runtime,
-      timeoutMs,
-      logger,
-      minTurnIndex,
-      expectedConversationId,
-    );
-  } catch (error) {
-    if (!shouldReloadAfterAssistantError(error)) {
-      throw error;
+  let reloadedAfterAssistantError = false;
+  let recoveredSubscriptionIssue = false;
+  for (;;) {
+    try {
+      return await waitForAssistantResponse(
+        Runtime,
+        timeoutMs,
+        logger,
+        minTurnIndex,
+        expectedConversationId,
+      );
+    } catch (error) {
+      if (isChatGptSubscriptionIssueError(error) && !recoveredSubscriptionIssue) {
+        recoveredSubscriptionIssue = true;
+        logger(
+          "[browser] ChatGPT subscription warning appeared during assistant wait; refreshing and retrying after it clears.",
+        );
+        if (recoverSubscriptionIssue) {
+          await recoverSubscriptionIssue();
+        } else {
+          await ensureNoChatGptSubscriptionIssue(Page, Runtime, logger);
+        }
+        continue;
+      }
+
+      if (!shouldReloadAfterAssistantError(error) || reloadedAfterAssistantError) {
+        throw error;
+      }
+      const conversationUrl = await readConversationUrl(Runtime);
+      if (!conversationUrl || !isConversationUrl(conversationUrl)) {
+        throw error;
+      }
+      reloadedAfterAssistantError = true;
+      logger("Assistant response stalled; reloading conversation and retrying once");
+      await Page.navigate({ url: conversationUrl });
+      await delay(1000);
     }
-    const conversationUrl = await readConversationUrl(Runtime);
-    if (!conversationUrl || !isConversationUrl(conversationUrl)) {
-      throw error;
-    }
-    logger("Assistant response stalled; reloading conversation and retrying once");
-    await Page.navigate({ url: conversationUrl });
-    await delay(1000);
-    return await waitForAssistantResponse(
-      Runtime,
-      timeoutMs,
-      logger,
-      minTurnIndex,
-      expectedConversationId,
-    );
   }
 }
 

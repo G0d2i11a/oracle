@@ -226,6 +226,30 @@ export async function ensureNoChatGptSubscriptionIssue(
   return maxRefreshes;
 }
 
+export function createChatGptSubscriptionIssueError(
+  issue: ChatGptSubscriptionIssueSnapshot,
+  refreshes = 0,
+): BrowserAutomationError {
+  return new BrowserAutomationError(`ChatGPT subscription warning is visible: ${issue.message}`, {
+    stage: "chatgpt-subscription-issue",
+    code: "chatgpt-subscription-issue",
+    reason: "subscription-issue-visible",
+    message: issue.message,
+    source: issue.source,
+    refreshes,
+  });
+}
+
+export async function throwIfChatGptSubscriptionIssue(
+  Runtime: ChromeClient["Runtime"],
+): Promise<void> {
+  const issue = await readChatGptSubscriptionIssue(Runtime);
+  if (!issue) {
+    return;
+  }
+  throw createChatGptSubscriptionIssueError(issue);
+}
+
 export async function readChatGptSubscriptionIssue(
   Runtime: ChromeClient["Runtime"],
 ): Promise<ChatGptSubscriptionIssueSnapshot | null> {
