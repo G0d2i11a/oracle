@@ -156,6 +156,48 @@ function buildThinkingTimeExpression(level: ThinkingTimeLevel): string {
       const t = normalize(text);
       return targetTokens.some((tok) => t.includes(String(tok).toLowerCase()));
     };
+    const hasProText = (value) => {
+      const text = normalize(value);
+      return (
+        text.includes(' pro') ||
+        text.startsWith('pro ') ||
+        text.endsWith(' pro') ||
+        text === 'pro' ||
+        text.includes('专业')
+      );
+    };
+    const hasExtendedText = (value) => {
+      const text = normalize(value);
+      return (
+        text.includes('extended') ||
+        text.includes('进阶') ||
+        text.includes('扩展') ||
+        text.includes('深度') ||
+        text.includes('加强') ||
+        text.includes('advanced')
+      );
+    };
+    const hasThinkingText = (value) => normalize(value).includes('thinking') || normalize(value).includes('思考');
+    const currentModelAlreadyProExtended = () => {
+      if (TARGET_LEVEL !== 'extended') return false;
+      const values = [];
+      const modelButton = document.querySelector(MODEL_BUTTON_SELECTOR);
+      if (modelButton) {
+        values.push(
+          modelButton.textContent || '',
+          modelButton.getAttribute?.('aria-label') || '',
+          modelButton.getAttribute?.('title') || '',
+        );
+      }
+      for (const pill of document.querySelectorAll('button.__composer-pill, [data-testid*="model-switcher"]')) {
+        values.push(
+          pill.textContent || '',
+          pill.getAttribute?.('aria-label') || '',
+          pill.getAttribute?.('title') || '',
+        );
+      }
+      return values.some((value) => hasProText(value) && hasExtendedText(value) && !hasThinkingText(value));
+    };
     const optionIsSelected = (node) => {
       if (!(node instanceof HTMLElement)) return false;
       const ariaChecked = node.getAttribute('aria-checked');
@@ -170,6 +212,10 @@ function buildThinkingTimeExpression(level: ThinkingTimeLevel): string {
         );
       } catch {}
     };
+
+    if (currentModelAlreadyProExtended()) {
+      return { status: 'already-selected', label: 'Pro Extended' };
+    }
 
     // ---------- OLD UI: standalone composer chip labelled "Thinking" ----------
     const OLD_CHIP_SELECTORS = [

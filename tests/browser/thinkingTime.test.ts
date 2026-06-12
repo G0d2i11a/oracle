@@ -33,6 +33,13 @@ describe("browser thinking-time selection expression", () => {
     expect(expression).toContain("LEVEL_TOKENS");
   });
 
+  it("does not reopen effort menus when current model is already Pro Extended", () => {
+    const expression = buildThinkingTimeExpressionForTest("extended");
+    expect(expression).toContain("currentModelAlreadyProExtended");
+    expect(expression).toContain("return { status: 'already-selected', label: 'Pro Extended' }");
+    expect(expression).toContain("hasProText(value) && hasExtendedText(value) && !hasThinkingText(value)");
+  });
+
   it("preserves Chinese thinking-effort labels while normalizing", () => {
     const expression = buildThinkingTimeExpressionForTest("heavy");
     expect(expression).toContain("\\u4e00-\\u9fa5");
