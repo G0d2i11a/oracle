@@ -215,7 +215,19 @@ function assertResolvedModelSelection(desiredModel: string, resolvedLabel: strin
   const hasInstantSignal = resolved.includes("instant");
   const resolvedHasProSignal =
     resolved.includes("pro") || resolved.includes("专业") || resolved.includes("进阶");
-  if (!hasProSignal || hasInstantSignal || (hasThinkingSignal && !resolvedHasProSignal)) {
+  const resolvedHasExtendedSignal =
+    resolved.includes("extended") ||
+    resolved.includes("进阶") ||
+    resolved.includes("gpt-5.5-pro") ||
+    resolved.includes("gpt 5 5 pro") ||
+    resolved.includes("gpt-5-5-pro") ||
+    /\b(?:gpt\s*)?5[.\s-]?5\b/.test(resolved);
+  if (
+    !hasProSignal ||
+    !resolvedHasExtendedSignal ||
+    hasInstantSignal ||
+    (hasThinkingSignal && !resolvedHasProSignal)
+  ) {
     throw new Error(
       `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires GPT-5.5 Pro Extended. Use model "gpt-5.5" with browser response effort "heavy" only when Thinking Heavy is explicitly requested.`,
     );
@@ -249,7 +261,7 @@ function buildModelSelectionExpression(
   const composerAllowBlankLiteral = JSON.stringify(composerSignalMatchers.allowBlank);
   const menuContainerLiteral = JSON.stringify(MENU_CONTAINER_SELECTOR);
   const menuItemLiteral = JSON.stringify(MENU_ITEM_SELECTOR);
-  return `(() => {
+  return `(async () => {
     ${buildClickDispatcher()}
     // Capture the selectors and matcher literals up front so the browser expression stays pure.
     const BUTTON_SELECTOR = '${MODEL_BUTTON_SELECTOR}';
@@ -262,6 +274,8 @@ function buildModelSelectionExpression(
     const COMPOSER_SIGNAL_EXCLUDES = ${composerExcludesLiteral};
     const COMPOSER_SIGNAL_ALLOW_BLANK = ${composerAllowBlankLiteral};
     const INITIAL_WAIT_MS = 150;
+    const BUTTON_WAIT_MS = 20000;
+    const BUTTON_WAIT_POLL_MS = 250;
     const REOPEN_INTERVAL_MS = 400;
     const MENU_OPEN_GRACE_MS = 4000;
     const MAX_WAIT_MS = 20000;
@@ -380,12 +394,16 @@ function buildModelSelectionExpression(
     const hasExtendedText = (value) =>
       value.includes('extended') ||
       value.includes('进阶') ||
+      value.includes('扩展') ||
+      value.includes('深度') ||
+      value.includes('加强') ||
       value.includes('advanced');
     const hasThinkingText = (value) => value.includes('thinking') || value.includes('思考');
     const wantsPro = hasProText(normalizedTarget) || normalizedTokens.some((token) => hasProText(token));
     const wantsInstant = normalizedTarget.includes('instant');
     const wantsThinking = hasThinkingText(normalizedTarget);
     const wantsExtended = hasExtendedText(normalizedTarget);
+    const wantsGpt55ExtendedPro = wantsPro && (wantsExtended || desiredVersion === '5-5');
     const isTargetGpt55VisibleAlias = (value) => {
       if (!(wantsPro && (wantsExtended || desiredVersion === '5-5'))) return false;
       const label = normalizeText(value);
@@ -442,9 +460,55 @@ function buildModelSelectionExpression(
       }
       return null;
     };
+    const findModelButton = () => {
+      const candidates = Array.from(document.querySelectorAll(BUTTON_SELECTOR)).filter((node) =>
+        isVisible(node),
+      );
+      if (candidates.length === 0) {
+        return null;
+      }
+      return (
+        candidates.find((node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const testid = node.getAttribute('data-testid') || '';
+          if (testid === 'model-switcher-dropdown-button') return true;
+          const value = normalizeText(
+            [
+              node.textContent || '',
+              node.getAttribute('aria-label') || '',
+              node.getAttribute('title') || '',
+            ].join(' '),
+          );
+          if (hasProText(value) || hasExtendedText(value) || hasThinkingText(value)) {
+            return true;
+          }
+          return (
+            node.matches('button.__composer-pill') &&
+            node.getAttribute('aria-haspopup') === 'menu'
+          );
+        }) || candidates[0]
+      );
+    };
+    const waitForModelButton = () =>
+      new Promise((resolve) => {
+        const start = performance.now();
+        const check = () => {
+          const candidate = findModelButton();
+          if (candidate) {
+            resolve(candidate);
+            return;
+          }
+          if (performance.now() - start >= BUTTON_WAIT_MS) {
+            resolve(null);
+            return;
+          }
+          setTimeout(check, BUTTON_WAIT_POLL_MS);
+        };
+        check();
+      });
 
     const initialInterruption = detectPageInterruption();
-    const button = document.querySelector(BUTTON_SELECTOR);
+    const button = await waitForModelButton();
     if (!button) {
       if (initialInterruption) {
         return { status: 'interrupted', interruption: initialInterruption };
@@ -502,8 +566,11 @@ function buildModelSelectionExpression(
       const normalizedLabel = normalizeText(getButtonLabel());
       if (!normalizedLabel) return false;
       if (isTargetGpt55VisibleAlias(normalizedLabel)) return true;
-      if (wantsPro && normalizedLabel === 'chatgpt' && hasProComposerPill()) {
+      if (!wantsGpt55ExtendedPro && wantsPro && normalizedLabel === 'chatgpt' && hasProComposerPill()) {
         return true;
+      }
+      if (wantsGpt55ExtendedPro && !isTargetGpt55VisibleAlias(normalizedLabel)) {
+        return false;
       }
       if (desiredVersion) {
         if (!normalizedLabel.includes(spacedVersion(desiredVersion))) return false;
@@ -525,6 +592,9 @@ function buildModelSelectionExpression(
       const signal = readComposerModelSignal();
       if (!signal) {
         return COMPOSER_SIGNAL_ALLOW_BLANK;
+      }
+      if (wantsGpt55ExtendedPro) {
+        return isTargetGpt55VisibleAlias(signal);
       }
       if (COMPOSER_SIGNAL_EXCLUDES.some((token) => token && signal.includes(token))) {
         return false;
@@ -572,6 +642,125 @@ function buildModelSelectionExpression(
       node instanceof HTMLElement &&
       (node.getAttribute('data-model-picker-thinking-effort-action') === 'true' ||
         Boolean(node.closest('[data-model-picker-thinking-effort-action="true"]')));
+    const hasAnswerNowText = (value) => {
+      const text = normalizeText(value);
+      return (
+        text.includes('answer now') ||
+        text.includes('answer immediately') ||
+        text.includes('立即回答') ||
+        text.includes('马上回答')
+      );
+    };
+    const isAnswerNowControl = (node) =>
+      node instanceof HTMLElement &&
+      hasAnswerNowText(
+        [
+          node.textContent || '',
+          node.getAttribute('aria-label') || '',
+          node.getAttribute('title') || '',
+        ].join(' '),
+      );
+    const extendedEffortTokens = ['extended', '进阶', '扩展', '深度', '加强', 'advanced'];
+    const matchesExtendedEffort = (value) => {
+      const text = normalizeText(value);
+      return extendedEffortTokens.some((token) => text.includes(token));
+    };
+    const rowForOption = (node) => {
+      if (!(node instanceof HTMLElement)) {
+        return null;
+      }
+      const effortRow = node.closest('[class*="model-picker-thinking-effort-row"]');
+      if (effortRow instanceof HTMLElement) {
+        return effortRow;
+      }
+      return node.closest('[role="menuitem"], [role="menuitemradio"], [data-radix-collection-item], li, [data-testid*="model-switcher-"]');
+    };
+    const optionContextText = (node) => {
+      const row = rowForOption(node);
+      return [
+        node?.textContent || '',
+        node?.getAttribute?.('aria-label') || '',
+        node?.getAttribute?.('title') || '',
+        row?.textContent || '',
+        row?.getAttribute?.('aria-label') || '',
+        row?.getAttribute?.('title') || '',
+      ].join(' ');
+    };
+    const isConfigureControl = (node) => {
+      const value = normalizeText(optionContextText(node));
+      return (
+        value.includes('configure') ||
+        value.includes('configuration') ||
+        value.includes('settings') ||
+        value.includes('customize') ||
+        value.includes('配置') ||
+        value.includes('设置')
+      );
+    };
+    const isProExtendedEffortOption = (node) => {
+      if (!(node instanceof HTMLElement) || isAnswerNowControl(node)) {
+        return false;
+      }
+      const value = optionContextText(node);
+      const normalized = normalizeText(value);
+      if (!matchesExtendedEffort(value)) {
+        return false;
+      }
+      if (normalized.includes('instant')) {
+        return false;
+      }
+      if (isThinkingEffortControl(node)) {
+        return true;
+      }
+      return (
+        normalized.includes('pro thinking effort') ||
+        normalized.includes('thinking effort') ||
+        normalized.includes('response effort')
+      );
+    };
+    const isStandaloneExtendedEffortLabel = (node) => {
+      if (!(node instanceof HTMLElement) || isAnswerNowControl(node)) {
+        return false;
+      }
+      const value = normalizeText(
+        [
+          node.textContent || '',
+          node.getAttribute('aria-label') || '',
+          node.getAttribute('title') || '',
+        ].join(' '),
+      );
+      return (
+        matchesExtendedEffort(value) &&
+        !hasProText(value) &&
+        !hasThinkingText(value) &&
+        !value.includes('instant')
+      );
+    };
+    const menuLooksLikeEffortMenu = (node) => {
+      const value = normalizeText(node?.textContent || '');
+      return (
+        value.includes('standard') &&
+        matchesExtendedEffort(value) &&
+        (value.includes('light') || value.includes('heavy') || value.includes('轻') || value.includes('重'))
+      );
+    };
+    const optionLooksLikeProSetup = (node, normalizedText, normalizedTestId) => {
+      if (!wantsGpt55ExtendedPro || !(node instanceof HTMLElement) || isAnswerNowControl(node)) {
+        return false;
+      }
+      const context = normalizeText(optionContextText(node));
+      const value = [normalizedText, normalizedTestId, context].filter(Boolean).join(' ');
+      if (!hasProText(value) && !value.includes('proresearch')) {
+        return false;
+      }
+      if (hasThinkingText(value) || value.includes('instant')) {
+        return false;
+      }
+      if (hasExtendedText(value)) {
+        return false;
+      }
+      return true;
+    };
     const optionIsSelected = (node) => {
       if (!(node instanceof HTMLElement)) {
         return false;
@@ -592,6 +781,71 @@ function buildModelSelectionExpression(
         return true;
       }
       return false;
+    };
+    const findCurrentModelEffortTrailing = () => {
+      const trailings = Array.from(
+        document.querySelectorAll('[data-model-picker-thinking-effort-action="true"]'),
+      ).filter((node) => node instanceof HTMLElement && !isAnswerNowControl(node));
+      if (trailings.length === 0) {
+        return null;
+      }
+      const selected = trailings.find((node) => {
+        const row = rowForOption(node);
+        return row instanceof HTMLElement && optionIsSelected(row);
+      });
+      if (selected) {
+        return selected;
+      }
+      const proRow = trailings.find((node) => {
+        const value = normalizeText(optionContextText(node));
+        return hasProText(value) && !hasThinkingText(value) && !value.includes('instant');
+      });
+      return proRow || trailings[0];
+    };
+    const findExtendedEffortMenuOption = (trailing) => {
+      const controlledId = trailing?.getAttribute?.('aria-controls');
+      const candidateMenus = [];
+      if (controlledId) {
+        const controlled = document.getElementById(controlledId);
+        if (controlled) candidateMenus.push(controlled);
+      }
+      for (const menu of getMenuRoots()) {
+        if (!candidateMenus.includes(menu)) {
+          candidateMenus.push(menu);
+        }
+      }
+      for (const menu of candidateMenus) {
+        const effortMenu = menuLooksLikeEffortMenu(menu);
+        const options = Array.from(menu.querySelectorAll(${menuItemLiteral}));
+        for (const option of options) {
+          if (isProExtendedEffortOption(option) || (effortMenu && isStandaloneExtendedEffortLabel(option))) {
+            return option;
+          }
+        }
+      }
+      return null;
+    };
+    const selectProExtendedEffortIfAvailable = async () => {
+      if (!wantsGpt55ExtendedPro) {
+        return null;
+      }
+      let option = findExtendedEffortMenuOption(null);
+      if (!option) {
+        const trailing = findCurrentModelEffortTrailing();
+        if (!trailing) {
+          return null;
+        }
+        dispatchClickSequence(trailing);
+        await new Promise((r) => setTimeout(r, INITIAL_WAIT_MS));
+        option = findExtendedEffortMenuOption(trailing);
+      }
+      if (!option) {
+        return null;
+      }
+      const already = optionIsSelected(option);
+      dispatchClickSequence(option);
+      await new Promise((r) => setTimeout(r, SETTLE_WAIT_MS));
+      return { status: already ? 'already-selected' : 'switched', label: 'Pro Extended' };
     };
 
     const scoreOption = (normalizedText, testid) => {
@@ -638,8 +892,13 @@ function buildModelSelectionExpression(
         candidateGpt55VisibleAlias ||
         hasProText(normalizedText) ||
         normalizedTestId.includes('pro');
+      const candidateVersion = versionFromTestId(normalizedTestId);
+      const candidateHasGpt55ExtendedProSignal =
+        candidateGpt55VisibleAlias ||
+        (hasProText(normalizedText) && hasExtendedText(normalizedText) && !candidateHasThinking);
       if (wantsPro && candidateHasThinking) return 0;
       if (wantsPro && !candidateHasPro) return 0;
+      if (wantsGpt55ExtendedPro && !candidateHasGpt55ExtendedProSignal) return 0;
       if (wantsThinking && candidateHasPro) return 0;
       if (desiredVersion === '5-5' && normalizedText && !candidateGpt55VisibleAlias) {
         const candidateHasVersion =
@@ -705,6 +964,21 @@ function buildModelSelectionExpression(
       }
       return Math.max(score, 0);
     };
+    const scoreProExtendedSetupOption = (option, normalizedText, normalizedTestId) => {
+      if (!wantsGpt55ExtendedPro || !(option instanceof HTMLElement) || isAnswerNowControl(option)) {
+        return 0;
+      }
+      if (isProExtendedEffortOption(option)) {
+        return 980;
+      }
+      if (optionLooksLikeProSetup(option, normalizedText, normalizedTestId)) {
+        return optionIsSelected(option) ? 520 : 700;
+      }
+      if (isConfigureControl(option)) {
+        return 460;
+      }
+      return 0;
+    };
 
     const findBestOption = () => {
       // Walk through every menu item and keep whichever earns the highest score.
@@ -713,19 +987,26 @@ function buildModelSelectionExpression(
       for (const menu of menus) {
         const buttons = Array.from(menu.querySelectorAll(${menuItemLiteral}));
         for (const option of buttons) {
-          if (isThinkingEffortControl(option)) {
+          if (isAnswerNowControl(option)) {
             continue;
           }
           const text = option.textContent ?? '';
           const normalizedText = normalizeText(text);
           const testid = option.getAttribute('data-testid') ?? '';
-          const score = scoreOption(normalizedText, testid);
+          const normalizedTestId = (testid ?? '').toLowerCase();
+          const setupScore = scoreProExtendedSetupOption(option, normalizedText, normalizedTestId);
+          if (isThinkingEffortControl(option) && setupScore <= 0) {
+            continue;
+          }
+          const directScore = scoreOption(normalizedText, testid);
+          const score = Math.max(directScore, setupScore);
           if (score <= 0) {
             continue;
           }
           const label = getOptionLabel(option);
+          const kind = setupScore > directScore ? 'setup' : 'target';
           if (!bestMatch || score > bestMatch.score) {
-            bestMatch = { node: option, label, score, testid, normalizedText };
+            bestMatch = { node: option, label, score, testid, normalizedText, kind };
           }
         }
       }
@@ -824,6 +1105,26 @@ function buildModelSelectionExpression(
         }
         const match = findBestOption();
         if (match) {
+          if (match.kind === 'setup') {
+            const previousButtonLabel = normalizeText(getButtonLabel());
+            const previousComposerSignal = readComposerModelSignal();
+            if (!optionIsSelected(match.node)) {
+              dispatchClickSequence(match.node);
+              await new Promise((r) => setTimeout(r, INITIAL_WAIT_MS));
+            }
+            const effortResult = await selectProExtendedEffortIfAvailable();
+            if (effortResult) {
+              closeMenu();
+              resolve({ status: effortResult.status, label: effortResult.label });
+              return;
+            }
+            if (selectionStateChanged(previousButtonLabel, previousComposerSignal)) {
+              setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
+              return;
+            }
+            setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
+            return;
+          }
           if (optionIsSelected(match.node)) {
             closeMenu();
             resolve({ status: 'already-selected', label: getResolvedLabel(match.label) });

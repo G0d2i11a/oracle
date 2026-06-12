@@ -148,6 +148,8 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("const withProPillSignal = (label) =>");
     expect(expression).toContain("return resolved + ' + Pro'");
     expect(expression).toContain("normalizedLabel === 'chatgpt' && hasProComposerPill()");
+    expect(expression).toContain("if (wantsGpt55ExtendedPro) {");
+    expect(expression).toContain("return isTargetGpt55VisibleAlias(signal);");
     expect(expression).toContain("node.matches(BUTTON_SELECTOR)");
     expect(expression).toContain("if (normalized !== 'chatgpt') return resolved;");
   });
@@ -173,11 +175,26 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("if (wantsPro && !candidateHasPro) return 0;");
   });
 
-  it("does not treat per-row thinking effort controls as model options", () => {
+  it("only uses per-row thinking effort controls for Pro Extended setup", () => {
     const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
     expect(expression).toContain("const isThinkingEffortControl = (node) =>");
     expect(expression).toContain("data-model-picker-thinking-effort-action");
-    expect(expression).toContain("if (isThinkingEffortControl(option))");
+    expect(expression).toContain("const isProExtendedEffortOption = (node) =>");
+    expect(expression).toContain("if (isThinkingEffortControl(option) && setupScore <= 0)");
+    expect(expression).toContain("const selectProExtendedEffortIfAvailable = async () =>");
+    expect(expression).toContain("label: 'Pro Extended'");
+    expect(expression).toContain("const hasAnswerNowText = (value) =>");
+    expect(expression).toContain("isAnswerNowControl(option)");
+  });
+
+  it("can use the Configure or plain Pro row as a setup step for Pro Extended", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain("const isConfigureControl = (node) =>");
+    expect(expression).toContain("const optionLooksLikeProSetup =");
+    expect(expression).toContain("const scoreProExtendedSetupOption =");
+    expect(expression).toContain("if (match.kind === 'setup')");
+    expect(expression).toContain("dispatchClickSequence(match.node)");
+    expect(expression).toContain("selectProExtendedEffortIfAvailable()");
   });
 
   it("does not accept a changed but wrong model selection as success", () => {
@@ -215,6 +232,12 @@ describe("browser model selection matchers", () => {
       /requires GPT-5.5 Pro Extended/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "GPT-5.5")).toThrow(
+      /requires GPT-5.5 Pro Extended/,
+    );
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "Pro")).toThrow(
+      /requires GPT-5.5 Pro Extended/,
+    );
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "ChatGPT + Pro")).toThrow(
       /requires GPT-5.5 Pro Extended/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "ChatGPT")).toThrow(
@@ -280,5 +303,14 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain('data-testid="model-switcher-dropdown-button"');
     expect(expression).toContain("button.__composer-pill[aria-haspopup=");
     expect(expression).toContain("button.__composer-pill");
+  });
+
+  it("waits for the rewritten model picker button before failing", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain("async () =>");
+    expect(expression).toContain("const BUTTON_WAIT_MS = 20000;");
+    expect(expression).toContain("const findModelButton = () =>");
+    expect(expression).toContain("const waitForModelButton = () =>");
+    expect(expression).toContain("const button = await waitForModelButton();");
   });
 });
