@@ -460,15 +460,14 @@ function buildModelSelectionExpression(
           ].join(' '),
         );
         if (!value || hasThinkingText(value)) return false;
-        if (!hasProText(value) && !hasExtendedText(value)) return false;
+        if (!hasProText(value)) return false;
         // The current model button is also a composer pill in ChatGPT's newer UI.
         // Only count it as a Pro signal when its own label says Pro/Extended.
         if (node.matches(BUTTON_SELECTOR)) {
           const buttonValue = normalizeText(readableLabelFor(node));
           return (
             isTargetGpt55VisibleAlias(buttonValue) ||
-            ((hasProText(buttonValue) || hasExtendedText(buttonValue)) &&
-              !hasThinkingText(buttonValue))
+            (hasProText(buttonValue) && !hasThinkingText(buttonValue))
           );
         }
         return true;
@@ -603,7 +602,7 @@ function buildModelSelectionExpression(
       if (desiredVersion) {
         if (!normalizedLabel.includes(spacedVersion(desiredVersion))) return false;
       }
-      if (wantsPro && !hasProText(normalizedLabel) && !hasExtendedText(normalizedLabel)) return false;
+      if (wantsPro && !hasProText(normalizedLabel)) return false;
       if (wantsInstant && !normalizedLabel.includes('instant')) return false;
       if (wantsThinking && !normalizedLabel.includes('thinking')) return false;
       // Also reject if button has variants we DON'T want
@@ -853,7 +852,7 @@ function buildModelSelectionExpression(
         const row = rowForOption(node);
         return row instanceof HTMLElement && optionIsSelected(row);
       });
-      if (selected) {
+      if (selected && isProEffortContext(selected)) {
         return selected;
       }
       const proRow = trailings.find((node) => {

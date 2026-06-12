@@ -161,11 +161,9 @@ describe("browser model selection matchers", () => {
       "Boolean(\\n      document.querySelector('button.__composer-pill, button[aria-label=\"Pro, click to remove\"]')",
     );
     expect(expression).toContain("if (!value || hasThinkingText(value)) return false;");
+    expect(expression).toContain("if (!hasProText(value)) return false;");
     expect(expression).toContain(
-      "if (!hasProText(value) && !hasExtendedText(value)) return false;",
-    );
-    expect(expression).toContain(
-      "if (wantsPro && !hasProText(normalizedLabel) && !hasExtendedText(normalizedLabel)) return false;",
+      "if (wantsPro && !hasProText(normalizedLabel)) return false;",
     );
   });
 
@@ -186,6 +184,7 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("const selectProExtendedEffortIfAvailable = async () =>");
     expect(expression).toContain("let option = null;");
     expect(expression).toContain("const trailing = findCurrentModelEffortTrailing();");
+    expect(expression).toContain("if (selected && isProEffortContext(selected))");
     expect(expression).not.toContain("let option = findExtendedEffortMenuOption(null);");
     expect(expression).toContain("label: 'Pro Extended'");
     expect(expression).toContain("const hasAnswerNowText = (value) =>");
