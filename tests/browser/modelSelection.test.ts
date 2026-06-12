@@ -127,7 +127,8 @@ describe("browser model selection matchers", () => {
   it("accepts the current Extended Pro page label when targeting GPT-5.5 Pro", () => {
     const expression = buildModelSelectionExpressionForTest("5.5 Pro");
     expect(expression).toContain("wantsPro && (wantsExtended || desiredVersion === '5-5')");
-    expect(() => assertResolvedModelSelectionForTest("5.5 Pro", "Extended Pro")).not.toThrow();
+    expect(() => assertResolvedModelSelectionForTest("Pro Extended", "Extended Pro")).not.toThrow();
+    expect(() => assertResolvedModelSelectionForTest("5.6 Pro Extended", "5.6 Pro Extended")).not.toThrow();
   });
 
   it("detects verification pages and missing model menus before retrying indefinitely", () => {
@@ -180,8 +181,12 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("const isThinkingEffortControl = (node) =>");
     expect(expression).toContain("data-model-picker-thinking-effort-action");
     expect(expression).toContain("const isProExtendedEffortOption = (node) =>");
+    expect(expression).toContain("const isProEffortContext = (node) =>");
     expect(expression).toContain("if (isThinkingEffortControl(option) && setupScore <= 0)");
     expect(expression).toContain("const selectProExtendedEffortIfAvailable = async () =>");
+    expect(expression).toContain("let option = null;");
+    expect(expression).toContain("const trailing = findCurrentModelEffortTrailing();");
+    expect(expression).not.toContain("let option = findExtendedEffortMenuOption(null);");
     expect(expression).toContain("label: 'Pro Extended'");
     expect(expression).toContain("const hasAnswerNowText = (value) =>");
     expect(expression).toContain("isAnswerNowControl(option)");
@@ -190,9 +195,12 @@ describe("browser model selection matchers", () => {
   it("can use the Configure or plain Pro row as a setup step for Pro Extended", () => {
     const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
     expect(expression).toContain("const isConfigureControl = (node) =>");
+    expect(expression).toContain("PICKER_CONFIGURATION_ROOT_SELECTOR");
     expect(expression).toContain("const optionLooksLikeProSetup =");
     expect(expression).toContain("const scoreProExtendedSetupOption =");
     expect(expression).toContain("if (match.kind === 'setup')");
+    expect(expression).toContain("const matchIsConfigure =");
+    expect(expression).toContain("if (matchIsConfigure) {");
     expect(expression).toContain("dispatchClickSequence(match.node)");
     expect(expression).toContain("selectProExtendedEffortIfAvailable()");
   });
@@ -226,24 +234,30 @@ describe("browser model selection matchers", () => {
 
   it("fails loudly if post-selection state resolves to Thinking instead of Pro Extended", () => {
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "Thinking 5.5 Heavy")).toThrow(
-      /requires GPT-5.5 Pro Extended/,
+      /requires Pro Extended/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "Instant + Pro")).toThrow(
-      /requires GPT-5.5 Pro Extended/,
+      /requires Pro Extended/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "GPT-5.5")).toThrow(
-      /requires GPT-5.5 Pro Extended/,
+      /requires Pro Extended/,
+    );
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "Extended")).toThrow(
+      /requires Pro Extended/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "Pro")).toThrow(
-      /requires GPT-5.5 Pro Extended/,
+      /requires Pro Extended/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "ChatGPT + Pro")).toThrow(
-      /requires GPT-5.5 Pro Extended/,
+      /requires Pro Extended/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "ChatGPT")).toThrow(
-      /requires GPT-5.5 Pro Extended/,
+      /requires Pro Extended/,
     );
-    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "GPT-5.5 Pro")).not.toThrow();
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "GPT-5.5 Pro")).toThrow(
+      /requires Pro Extended/,
+    );
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "Pro Extended")).not.toThrow();
     expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "进阶专业")).not.toThrow();
   });
 

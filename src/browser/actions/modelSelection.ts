@@ -194,12 +194,11 @@ function throwModelSelectionInterruption(interruption?: ModelSelectionInterrupti
 function assertResolvedModelSelection(desiredModel: string, resolvedLabel: string): void {
   const desired = desiredModel.toLowerCase();
   const resolved = resolvedLabel.toLowerCase();
-  const wantsGpt55Pro =
+  const wantsProExtended =
     desired === "gpt-5.5-pro" ||
-    desired.includes("5.5 pro") ||
-    desired.includes("5-5 pro") ||
-    (desired.includes("pro") && desired.includes("extended"));
-  if (!wantsGpt55Pro || !resolved) {
+    ((desired.includes("pro") || desired.includes("专业")) &&
+      (desired.includes("extended") || desired.includes("进阶")));
+  if (!wantsProExtended || !resolved) {
     return;
   }
   const hasProSignal =
@@ -207,21 +206,19 @@ function assertResolvedModelSelection(desiredModel: string, resolvedLabel: strin
     resolved.endsWith("pro") ||
     resolved.includes("pro ") ||
     resolved.includes("专业") ||
-    resolved.includes("extended") ||
-    resolved.includes("进阶") ||
     resolved.includes("gpt-5.5-pro") ||
     resolved.includes("gpt 5 5 pro");
   const hasThinkingSignal = resolved.includes("thinking") || resolved.includes("思考");
   const hasInstantSignal = resolved.includes("instant");
   const resolvedHasProSignal =
-    resolved.includes("pro") || resolved.includes("专业") || resolved.includes("进阶");
+    resolved.includes("pro") || resolved.includes("专业");
   const resolvedHasExtendedSignal =
     resolved.includes("extended") ||
     resolved.includes("进阶") ||
+    resolved.includes("advanced") ||
     resolved.includes("gpt-5.5-pro") ||
     resolved.includes("gpt 5 5 pro") ||
-    resolved.includes("gpt-5-5-pro") ||
-    /\b(?:gpt\s*)?5[.\s-]?5\b/.test(resolved);
+    resolved.includes("gpt-5-5-pro");
   if (
     !hasProSignal ||
     !resolvedHasExtendedSignal ||
@@ -229,7 +226,7 @@ function assertResolvedModelSelection(desiredModel: string, resolvedLabel: strin
     (hasThinkingSignal && !resolvedHasProSignal)
   ) {
     throw new Error(
-      `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires GPT-5.5 Pro Extended. Use model "gpt-5.5" with browser response effort "heavy" only when Thinking Heavy is explicitly requested.`,
+      `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires Pro Extended. Use a non-Pro model with browser response effort "heavy" only when Thinking Heavy is explicitly requested.`,
     );
   }
 }
@@ -303,8 +300,39 @@ function buildModelSelectionExpression(
     };
     const readableLabelFor = (node) =>
       (node?.textContent || node?.getAttribute?.('aria-label') || node?.getAttribute?.('title') || '').trim();
-    const getMenuRoots = () =>
-      Array.from(document.querySelectorAll(${menuContainerLiteral})).filter((node) => isVisible(node));
+    const PICKER_CONFIGURATION_ROOT_SELECTOR =
+      '[role="dialog"], dialog, [role="group"], [data-testid*="model-picker"], [data-testid*="model-switcher"], [data-testid*="model-config"], [data-testid*="model-settings"]';
+    const rootLooksLikeModelConfiguration = (node) => {
+      const value = normalizeText(
+        [
+          node?.textContent || '',
+          node?.getAttribute?.('aria-label') || '',
+          node?.getAttribute?.('title') || '',
+          node?.getAttribute?.('data-testid') || '',
+        ].join(' '),
+      );
+      return (
+        value.includes('model') ||
+        value.includes('chatgpt') ||
+        value.includes('pro thinking effort') ||
+        value.includes('thinking effort') ||
+        value.includes('response effort') ||
+        value.includes('configure') ||
+        value.includes('configuration') ||
+        value.includes('模型') ||
+        value.includes('配置') ||
+        value.includes('思考')
+      );
+    };
+    const getMenuRoots = () => {
+      const roots = [
+        ...Array.from(document.querySelectorAll(${menuContainerLiteral})),
+        ...Array.from(document.querySelectorAll(PICKER_CONFIGURATION_ROOT_SELECTOR)).filter((node) =>
+          rootLooksLikeModelConfiguration(node),
+        ),
+      ].filter((node) => isVisible(node));
+      return roots.filter((node, index) => roots.indexOf(node) === index);
+    };
     const collectVisibleControls = () => {
       const controls = Array.from(document.querySelectorAll('button,a,[role="button"],[role="menuitem"],[role="menuitemradio"]'))
         .filter((node) => isVisible(node))
@@ -718,6 +746,38 @@ function buildModelSelectionExpression(
         normalized.includes('response effort')
       );
     };
+    const isProThinkingEffortSetupControl = (node) => {
+      if (!(node instanceof HTMLElement) || isAnswerNowControl(node)) {
+        return false;
+      }
+      const value = normalizeText(optionContextText(node));
+      if (!value) {
+        return false;
+      }
+      const referencesEffort =
+        value.includes('pro thinking effort') ||
+        value.includes('pro response effort') ||
+        (hasProText(value) &&
+          (value.includes('thinking effort') ||
+            value.includes('response effort') ||
+            value.includes('思考')));
+      return referencesEffort && !value.includes('instant');
+    };
+    const isProEffortContext = (node) => {
+      if (!(node instanceof HTMLElement)) {
+        return false;
+      }
+      const value = normalizeText(optionContextText(node));
+      return (
+        isProThinkingEffortSetupControl(node) ||
+        (hasProText(value) &&
+          !value.includes('instant') &&
+          (value.includes('thinking effort') ||
+            value.includes('response effort') ||
+            value.includes('pro thinking effort') ||
+            value.includes('思考')))
+      );
+    };
     const isStandaloneExtendedEffortLabel = (node) => {
       if (!(node instanceof HTMLElement) || isAnswerNowControl(node)) {
         return false;
@@ -800,7 +860,18 @@ function buildModelSelectionExpression(
         const value = normalizeText(optionContextText(node));
         return hasProText(value) && !hasThinkingText(value) && !value.includes('instant');
       });
-      return proRow || trailings[0];
+      const proEffort = trailings.find((node) => isProEffortContext(node));
+      if (proRow || proEffort) {
+        return proRow || proEffort;
+      }
+      for (const menu of getMenuRoots()) {
+        const options = Array.from(menu.querySelectorAll(${menuItemLiteral}));
+        const labeledEffort = options.find((node) => isProThinkingEffortSetupControl(node));
+        if (labeledEffort) {
+          return labeledEffort;
+        }
+      }
+      return null;
     };
     const findExtendedEffortMenuOption = (trailing) => {
       const controlledId = trailing?.getAttribute?.('aria-controls');
@@ -816,9 +887,29 @@ function buildModelSelectionExpression(
       }
       for (const menu of candidateMenus) {
         const effortMenu = menuLooksLikeEffortMenu(menu);
+        const menuText = normalizeText(
+          [
+            menu?.textContent || '',
+            menu?.getAttribute?.('aria-label') || '',
+            menu?.getAttribute?.('title') || '',
+          ].join(' '),
+        );
+        const proContext =
+          isProEffortContext(trailing) ||
+          (hasProText(menuText) &&
+            !menuText.includes('instant') &&
+            (menuText.includes('thinking effort') ||
+              menuText.includes('response effort') ||
+              menuText.includes('pro thinking effort') ||
+              menuText.includes('思考')));
         const options = Array.from(menu.querySelectorAll(${menuItemLiteral}));
         for (const option of options) {
-          if (isProExtendedEffortOption(option) || (effortMenu && isStandaloneExtendedEffortLabel(option))) {
+          const optionText = normalizeText(optionContextText(option));
+          const optionExplicitlyPro = hasProText(optionText) && !optionText.includes('instant');
+          if (
+            (isProExtendedEffortOption(option) && (proContext || optionExplicitlyPro)) ||
+            (effortMenu && proContext && isStandaloneExtendedEffortLabel(option))
+          ) {
             return option;
           }
         }
@@ -829,16 +920,14 @@ function buildModelSelectionExpression(
       if (!wantsGpt55ExtendedPro) {
         return null;
       }
-      let option = findExtendedEffortMenuOption(null);
-      if (!option) {
-        const trailing = findCurrentModelEffortTrailing();
-        if (!trailing) {
-          return null;
-        }
-        dispatchClickSequence(trailing);
-        await new Promise((r) => setTimeout(r, INITIAL_WAIT_MS));
-        option = findExtendedEffortMenuOption(trailing);
+      let option = null;
+      const trailing = findCurrentModelEffortTrailing();
+      if (!trailing) {
+        return null;
       }
+      dispatchClickSequence(trailing);
+      await new Promise((r) => setTimeout(r, INITIAL_WAIT_MS));
+      option = findExtendedEffortMenuOption(trailing);
       if (!option) {
         return null;
       }
@@ -969,7 +1058,11 @@ function buildModelSelectionExpression(
         return 0;
       }
       if (isProExtendedEffortOption(option)) {
-        return 980;
+        const value = normalizeText(optionContextText(option));
+        return hasProText(value) && !value.includes('instant') ? 980 : 0;
+      }
+      if (isProThinkingEffortSetupControl(option)) {
+        return 760;
       }
       if (optionLooksLikeProSetup(option, normalizedText, normalizedTestId)) {
         return optionIsSelected(option) ? 520 : 700;
@@ -1108,9 +1201,18 @@ function buildModelSelectionExpression(
           if (match.kind === 'setup') {
             const previousButtonLabel = normalizeText(getButtonLabel());
             const previousComposerSignal = readComposerModelSignal();
+            const matchIsConfigure =
+              isConfigureControl(match.node) &&
+              !optionLooksLikeProSetup(match.node, match.normalizedText, (match.testid ?? '').toLowerCase()) &&
+              !isProThinkingEffortSetupControl(match.node) &&
+              !isProExtendedEffortOption(match.node);
             if (!optionIsSelected(match.node)) {
               dispatchClickSequence(match.node);
               await new Promise((r) => setTimeout(r, INITIAL_WAIT_MS));
+            }
+            if (matchIsConfigure) {
+              setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
+              return;
             }
             const effortResult = await selectProExtendedEffortIfAvailable();
             if (effortResult) {

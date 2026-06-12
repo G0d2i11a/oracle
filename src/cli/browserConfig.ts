@@ -31,7 +31,7 @@ const DEFAULT_CHROME_PROFILE = "Default";
 // The browser label is passed to the model picker which fuzzy-matches against ChatGPT's UI.
 const BROWSER_MODEL_LABELS: [ModelName, string][] = [
   // Most specific first (e.g., "gpt-5.2-thinking" before "gpt-5.2")
-  ["gpt-5.5-pro", "5.5 Extended Pro"],
+  ["gpt-5.5-pro", "Pro Extended"],
   ["gpt-5.5", "Thinking 5.5"],
   ["gpt-5.4-pro", "GPT-5.4 Pro"],
   ["gpt-5.2-thinking", "GPT-5.2 Thinking"],
