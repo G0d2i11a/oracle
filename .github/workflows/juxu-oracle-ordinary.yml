@@ -1,0 +1,50 @@
+name: Juxu oracle ordinary checks
+on:
+  push:
+    branches: [ci/juxu-oracle-ordinary-20261121]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify Oracle Markdown and CLI formatting
+    if: >-
+      github.repository_id == '1233780522' &&
+      github.repository == 'G0d2i11a/oracle' &&
+      github.ref == 'refs/heads/ci/juxu-oracle-ordinary-20261121' &&
+      github.actor_id == '130071715' &&
+      github.triggering_actor == 'G0d2i11a'
+    runs-on: juxu-oracle-linux-amd64-v1
+    timeout-minutes: 25
+    steps:
+      - name: Verify ordinary Linux guest
+        shell: bash
+        env:
+          GUEST_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          [[ "$GUEST_ENVIRONMENT" == self-hosted && "$RUNNER_OS" == Linux && "$RUNNER_ARCH" == X64 ]]
+          [[ "$RUNNER_NAME" =~ ^juxu-oracle-[a-f0-9]{16}$ ]]
+          [[ "$(uname -sm)" == "Linux x86_64" && "$(id -u)" != 0 ]]
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+
+      - name: Verify Oracle Markdown and CLI formatting
+        shell: bash
+        env:
+          ORACLE_HOME_DIR: ${{ runner.temp }}/oracle-format-tests
+          ORACLE_LIVE_TEST: ''
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+          corepack pnpm exec vitest run tests/oracle/markdown.test.ts tests/cli/format.test.ts tests/cli/markdownRenderer.test.ts
